@@ -1,0 +1,14 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+
+# Local tools and generated files
+.vscode/
+*.log
+
+# Database exports and temporary files
+*.sql.gz
+*.dump

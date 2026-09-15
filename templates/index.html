@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="id">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Peta Sebaran Hasil Tangkapan Ikan dan Hasil Pertanian</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}" />
+  </head>
+  <body data-role="{{ session.get('user', {}).get('role', '') }}">
+    <header class="topbar">
+      <div class="brand-wrap">
+        <div class="brand-logo">◉</div>
+        <h1>PETA SEBARAN HASIL TANGKAPAN IKAN DAN HASIL PERTANIAN<br />DI KOTA TERNATE, MALUKU UTARA</h1>
+      </div>
+      <nav class="top-actions">
+        <button class="menu-btn" id="layer-toggle" type="button">Layer</button>
+        <button class="menu-btn" id="about-toggle" type="button">Tentang</button>
+        {% if session.get('user') %}
+          <span class="user-chip">Akun aktif</span>
+          <a class="menu-btn admin" href="{{ url_for('logout') }}">Keluar</a>
+        {% else %}
+          <a class="menu-btn admin" href="{{ url_for('login') }}">Masuk</a>
+        {% endif %}
+      </nav>
+    </header>
+
+    <div class="map-dialog layer-dialog" id="layer-dialog" hidden>
+      <div class="dialog-header">
+        <h2>Layer Peta</h2>
+        <button class="dialog-close" data-close-dialog="layer-dialog" type="button" aria-label="Tutup">×</button>
+      </div>
+      <label class="layer-option"><input id="layer-zones" type="checkbox" checked /> Zona kecamatan</label>
+      <label class="layer-option"><input id="layer-markers" type="checkbox" checked /> Titik lokasi produksi</label>
+      <label class="layer-option"><input id="layer-labels" type="checkbox" checked /> Nama lokasi</label>
+      <div class="layer-subtitle">Filter zona kecamatan</div>
+      <label class="layer-option"><input name="zone-filter" type="checkbox" value="fish" checked /> Zona perikanan</label>
+      <label class="layer-option"><input name="zone-filter" type="checkbox" value="agriculture" checked /> Zona pertanian</label>
+      <div class="layer-subtitle">Basemap</div>
+      <label class="layer-option"><input name="basemap" type="radio" value="street" checked /> OpenStreetMap</label>
+      <label class="layer-option"><input name="basemap" type="radio" value="satellite" /> Satelit</label>
+    </div>
+
+    <div class="map-dialog about-dialog" id="about-dialog" hidden>
+      <div class="dialog-header">
+        <h2>Tentang Peta</h2>
+        <button class="dialog-close" data-close-dialog="about-dialog" type="button" aria-label="Tutup">×</button>
+      </div>
+      <p>Peta sebaran hasil tangkapan ikan dan hasil pertanian di Kota Ternate.</p>
+      <dl class="about-list">
+        <dt>Choropleth</dt><dd>Warna zona menunjukkan tingkat produksi berdasarkan cluster K-Means.</dd>
+        <dt>Zona</dt><dd>Batas kecamatan berasal dari file administrasi SHP yang diimpor ke MySQL.</dd>
+        <dt>Point</dt><dd>Marker menunjukkan lokasi produksi yang tersimpan di database.</dd>
+        <dt>Algoritma</dt><dd>K-Means mengelompokkan produksi rendah, sedang, dan tinggi.</dd>
+      </dl>
+    </div>
+
+    <main class="content-shell">
+      <aside class="sidebar-panel">
+        <div class="panel-header">
+          <h2>Legenda</h2>
+          <div class="panel-tools">
+            <button class="tool-btn">＋</button>
+            <button class="tool-btn">－</button>
+            <button class="tool-btn">⤢</button>
+          </div>
+        </div>
+
+        <div class="legend-block">
+          <p class="block-title">Cluster Produksi (K-Means)</p>
+          <div class="legend-item"><span class="swatch green"></span> Cluster 1 - Produksi Rendah</div>
+          <div class="legend-item"><span class="swatch yellow"></span> Cluster 2 - Produksi Sedang</div>
+          <div class="legend-item"><span class="swatch red"></span> Cluster 3 - Produksi Tinggi</div>
+        </div>
+
+        <div class="legend-block">
+          <p class="block-title">Jenis Komoditas</p>
+          <div class="legend-item icon-row"><span class="dot-marker fish">🐟</span> Hasil Tangkapan Ikan</div>
+          <div class="legend-item icon-row"><span class="dot-marker leaf">🌿</span> Hasil Pertanian</div>
+        </div>
+
+        <div class="legend-block">
+          <p class="block-title">Batas Administrasi</p>
+          <div class="legend-item dashed-row"><span class="dashed-line"></span> Batas Kecamatan</div>
+        </div>
+
+      </aside>
+
+      <section class="map-section">
+        <div id="map"></div>
+        <div class="info-card">
+          <div class="info-card-header">
+            <h3>Informasi Produksi</h3>
+            <button class="close-btn">×</button>
+          </div>
+          <div class="info-body">
+            <div class="info-row"><span>Kecamatan</span><strong id="info-kecamatan">: Ternate Utara</strong></div>
+            <div class="info-row"><span>Komoditas</span><strong id="info-komoditas">: Ikan Cakalang</strong></div>
+            <div class="info-row"><span>Jenis</span><strong id="info-jenis">: Hasil Tangkapan Ikan</strong></div>
+            <div class="info-row"><span>Produksi</span><strong id="info-produksi">: 1.250 Ton/Tahun</strong></div>
+            <div class="info-row"><span>Cluster (K-Means)</span><strong id="info-cluster">: Cluster 3 - Tinggi</strong></div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <section class="summary-table-wrap">
+      <h3>Ringkasan Produksi per Kecamatan</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>Kecamatan</th>
+            <th>Produksi Ikan (Ton)</th>
+            <th>Produksi Pertanian (Ton)</th>
+            <th>Total Produksi</th>
+            <th>Cluster</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </section>
+
+    {% if session.get('user') and session['user']['role'] == 'user' %}
+    <section class="management-panel">
+      <div>
+        <h3>Ajukan Data Produksi</h3>
+        <p>Pilih titik lokasi yang tersedia. Data akan menunggu verifikasi admin.</p>
+      </div>
+      <form id="production-form" class="production-form">
+        <input name="commodity" placeholder="Jenis komoditas" required />
+        <input name="production" type="number" step="0.01" placeholder="Produksi (ton)" required />
+        <select name="marker_id" id="marker-select" required>
+          <option value="">Pilih titik lokasi yang tersedia</option>
+        </select>
+        <button class="primary-btn" type="submit">Kirim Data</button>
+      </form>
+      <p id="form-message" class="form-message"></p>
+    </section>
+    {% endif %}
+
+    {% if session.get('user') and session['user']['role'] in ['admin_pertanian', 'admin_perikanan'] %}
+    <section class="management-panel admin-panel">
+      <div>
+        <h3>Verifikasi Data Produksi</h3>
+        <p>Admin dapat memverifikasi atau menolak pengajuan pengguna usaha.</p>
+      </div>
+      <div id="verification-list">Memuat data pengajuan...</div>
+    </section>
+    {% endif %}
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+    <script src="{{ url_for('static', filename='script.js') }}"></script>
+  </body>
+</html>
