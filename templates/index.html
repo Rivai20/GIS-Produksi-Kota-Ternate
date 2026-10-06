@@ -108,9 +108,12 @@
     </main>
 
     <section class="summary-table-wrap">
-      <h3>Ringkasan Produksi per Kecamatan</h3>
+      <div class="summary-table-heading">
+        <h3 id="summary-title">Ringkasan Produksi per Kecamatan</h3>
+        <button id="summary-reset" class="secondary-btn" type="button" hidden>Ringkasan kecamatan</button>
+      </div>
       <table>
-        <thead>
+        <thead id="summary-head">
           <tr>
             <th>Kecamatan</th>
             <th>Produksi Ikan (Ton)</th>

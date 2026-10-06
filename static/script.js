@@ -54,23 +54,40 @@ let activeCommodityMetric = 'all';
 let zonesVisible = true;
 let markersRendered = false;
 let selectedDistrictName = 'Ternate Utara';
+let commodityDetails = [];
 
-function getActiveProduction(district) {
-  if (activeCommodityMetric === 'fish') {
+const summaryTitle = document.getElementById('summary-title');
+const summaryHead = document.getElementById('summary-head');
+const summaryReset = document.getElementById('summary-reset');
+
+function escapeHtmlText(value) {
+  return String(value ?? '').replace(/[&<>"']/g, (character) => ({
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#39;',
+  })[character]);
+}
+
+function getActiveProduction(district, metric = activeCommodityMetric) {
+  if (metric === 'fish') {
     return { value: district.production.ikan, label: 'Produksi Perikanan' };
   }
-  if (activeCommodityMetric === 'agriculture') {
+  if (metric === 'agriculture') {
     return { value: district.production.pertanian, label: 'Produksi Pertanian' };
   }
   return { value: district.production.total, label: 'Total Produksi' };
 }
 
-function updateDistrictInfo(district) {
+function updateDistrictInfo(district, metric = activeCommodityMetric) {
   if (!district) return;
-  const production = getActiveProduction(district);
+  const production = getActiveProduction(district, metric);
   document.getElementById('info-kecamatan').textContent = ': ' + district.name;
   document.getElementById('info-komoditas').textContent = ': ' + district.commodity;
-  document.getElementById('info-jenis').textContent = ': ' + district.type_name;
+  document.getElementById('info-jenis').textContent = ': ' + (metric === 'fish'
+    ? 'Hasil Tangkapan Ikan'
+    : metric === 'agriculture' ? 'Hasil Pertanian' : district.type_name);
   document.getElementById('info-produksi').textContent = ': ' + production.value.toLocaleString('id-ID') + ' Ton/Tahun';
   document.getElementById('info-cluster').textContent = ': ' + clusterLabels[district.cluster];
 }
@@ -101,13 +118,24 @@ const createMarkerIcon = (emoji, type) => {
 
 function renderDataset(dataset) {
   districtData = dataset.districts;
+  commodityDetails = dataset.commodity_details || [];
   populateMarkerSelect(dataset.markers);
   const zoneBounds = L.featureGroup();
   if (!markersRendered) {
     dataset.markers.forEach((point) => {
       const marker = L.marker(point.coords, { icon: createMarkerIcon(point.emoji, point.type_name) }).addTo(markerLayer);
       if (point.id !== undefined) marker.on('click', () => selectMarker(point.id));
-      marker.bindPopup(`<div class="custom-popup"><strong>${point.label}</strong>Kecamatan: ${point.district_name}<br>Produksi: ${point.value}</div>`);
+      marker.bindPopup(`<div class="custom-popup"><strong>${escapeHtmlText(point.label)}</strong>Kecamatan: ${escapeHtmlText(point.district_name)}<br>${escapeHtmlText(point.value)}</div>`);
+      marker.on('click', () => {
+        const domain = getCommodityType(point.type_name);
+        if (!domain || !point.district_name) return;
+        selectedDistrictName = point.district_name;
+        updateDistrictInfo(
+          districtData.find((district) => district.name === point.district_name),
+          domain,
+        );
+        renderCommodityBreakdown(point, domain, marker);
+      });
       marker.bindTooltip(point.label, {
         permanent: true,
         direction: 'top',
@@ -147,6 +175,7 @@ function renderDataset(dataset) {
   polygon.on('click', function () {
     selectedDistrictName = district.name;
     updateDistrictInfo(district);
+    renderSummaryTable(districtData);
   });
   });
   updateDistrictInfo(districtData.find((district) => district.name === selectedDistrictName) || districtData[0]);
@@ -160,6 +189,40 @@ function renderDataset(dataset) {
 function bindDistrictPopup(district, polygon) {
   const production = getActiveProduction(district);
   polygon.bindPopup(`<div class="custom-popup"><strong>${district.name}</strong>${production.label}: ${production.value.toLocaleString('id-ID')} ton<br>${clusterLabels[district.cluster]}</div>`);
+}
+
+function renderCommodityBreakdown(point, domain, marker) {
+  const details = commodityDetails
+    .filter((record) => record.domain === domain
+      && (record.district_name === point.district_name || record.scope === 'Seluruh Kota'))
+    .sort((left, right) => right.year - left.year || left.commodity.localeCompare(right.commodity, 'id'));
+  const domainLabel = domain === 'fish' ? 'Perikanan' : 'Pertanian';
+  summaryTitle.textContent = `Komoditas ${domainLabel} · ${point.district_name}`;
+  summaryReset.hidden = false;
+  summaryHead.innerHTML = '<tr><th>Kecamatan/Cakupan</th><th>Komoditas</th><th>Tahun</th><th>Produksi (Ton)</th></tr>';
+
+  const tableBody = document.querySelector('.summary-table-wrap tbody');
+  if (!details.length) {
+    tableBody.innerHTML = '<tr><td colspan="4">Belum ada rincian komoditas untuk titik ini.</td></tr>';
+  } else {
+    tableBody.innerHTML = details.map((record) => `
+      <tr>
+        <td>${escapeHtmlText(record.scope === 'Seluruh Kota' ? record.scope : record.district_name)}</td>
+        <td>${escapeHtmlText(record.commodity)}</td>
+        <td>${record.year}</td>
+        <td>${Number(record.production_ton).toLocaleString('id-ID')}</td>
+      </tr>`).join('');
+  }
+
+  const popupRows = details.map((record) => `
+    <tr><td>${escapeHtmlText(record.commodity)}${record.scope === 'Seluruh Kota' ? ' <small>(kota)</small>' : ''}</td>
+    <td>${record.year}</td><td>${Number(record.production_ton).toLocaleString('id-ID')} ton</td></tr>`).join('');
+  const popupContent = `<div class="custom-popup commodity-popup">
+    <strong>${escapeHtmlText(point.label)}</strong>
+    <span>Kecamatan: ${escapeHtmlText(point.district_name)}</span>
+    ${details.length ? `<table class="commodity-popup-table"><tbody>${popupRows}</tbody></table>` : '<span>Belum ada rincian komoditas.</span>'}
+  </div>`;
+  marker.setPopupContent(popupContent);
 }
 
 function getCommodityType(type) {
@@ -181,6 +244,16 @@ async function applyCommodityFilter() {
 }
 
 function renderSummaryTable(districts) {
+  summaryTitle.textContent = 'Ringkasan Produksi per Kecamatan';
+  summaryReset.hidden = true;
+  summaryHead.innerHTML = `
+    <tr>
+      <th>Kecamatan</th>
+      <th>Produksi Ikan (Ton)</th>
+      <th>Produksi Pertanian (Ton)</th>
+      <th>Total Produksi</th>
+      <th>Cluster</th>
+    </tr>`;
   const tableBody = document.querySelector('.summary-table-wrap tbody');
   const rows = districts.map((district) => `
     <tr><td>${district.name}</td><td>${activeCommodityMetric === 'agriculture' ? '-' : district.production.ikan.toLocaleString('id-ID')}</td>
@@ -190,6 +263,10 @@ function renderSummaryTable(districts) {
   `).join('');
   tableBody.innerHTML = rows;
 }
+
+summaryReset.addEventListener('click', () => {
+  renderSummaryTable(districtData);
+});
 
 fetch('/api/dataset', { cache: 'no-store' })
   .then((response) => response.json().then((data) => ({ ok: response.ok, data })))

@@ -293,12 +293,57 @@ def dataset():
         cursor.execute(
             "SELECT CONCAT('Pengajuan: ', commodity) AS label, "
             "CONCAT(production, ' ton') AS value, "
-            "CASE WHEN type_name IN ('fish', 'Hasil Tangkapan Ikan') THEN 'fish' ELSE 'leaf' END AS type_name, "
-            "CASE WHEN type_name IN ('fish', 'Hasil Tangkapan Ikan') THEN '🐟' ELSE '🌿' END AS emoji, "
-            'latitude, longitude FROM production_records WHERE status = %s',
+            "CASE WHEN records.type_name IN ('fish', 'Hasil Tangkapan Ikan') THEN 'fish' ELSE 'leaf' END AS type_name, "
+            "CASE WHEN records.type_name IN ('fish', 'Hasil Tangkapan Ikan') THEN '🐟' ELSE '🌿' END AS emoji, "
+            'records.latitude, records.longitude, markers.district_name FROM production_records records '
+            'JOIN production_markers markers ON markers.latitude = records.latitude '
+            'AND markers.longitude = records.longitude WHERE records.status = %s',
             ('verified',),
         )
         markers.extend(cursor.fetchall())
+
+        commodity_details = []
+        for table_name, domain, has_district in (
+            ('fish_production', 'fish', True),
+            ('crop_production', 'agriculture', True),
+            ('horticulture_production', 'agriculture', False),
+        ):
+            district_column = 'district_name' if has_district else 'NULL AS district_name'
+            scope = 'Kecamatan' if has_district else 'Seluruh Kota'
+            cursor.execute(f'''
+                SELECT %s AS domain, %s AS source_table, {district_column},
+                       commodity, year, production_ton, %s AS scope
+                FROM `{table_name}`
+                WHERE year = (SELECT MAX(year) FROM `{table_name}`)
+                ORDER BY commodity, district_name
+            ''', (domain, table_name, scope))
+            commodity_details.extend(cursor.fetchall())
+
+        cursor.execute('''
+            SELECT CASE WHEN records.type_name IN ('fish', 'Hasil Tangkapan Ikan')
+                        THEN 'fish' ELSE 'agriculture' END AS domain,
+                   'production_records' AS source_table, markers.district_name,
+                   records.commodity, YEAR(records.created_at) AS year,
+                   records.production AS production_ton, 'Kecamatan' AS scope
+            FROM production_records records
+            JOIN production_markers markers
+              ON markers.latitude = records.latitude
+             AND markers.longitude = records.longitude
+            WHERE records.status = 'verified'
+            ORDER BY records.created_at DESC
+        ''')
+        verified_details = cursor.fetchall()
+        verified_detail_scopes = {
+            (record['domain'], record['district_name']) for record in verified_details
+        }
+        commodity_details = [
+            record for record in commodity_details
+            if record['district_name'] is None
+            or (record['domain'], record['district_name']) not in verified_detail_scopes
+        ]
+        commodity_details.extend(verified_details)
+        for record in commodity_details:
+            record['production_ton'] = float(record['production_ton'])
 
         for district in districts:
             if isinstance(district['coords'], str):
@@ -323,7 +368,11 @@ def dataset():
             return jsonify({'error': 'Filter komoditas tidak valid'}), 400
         calculate_clusters(districts, metric=metric)
 
-        return jsonify({'districts': districts, 'markers': markers})
+        return jsonify({
+            'districts': districts,
+            'markers': markers,
+            'commodity_details': commodity_details,
+        })
     except mysql.connector.Error as error:
         return jsonify({'error': f'Koneksi MySQL gagal: {error}'}), 500
     finally:
