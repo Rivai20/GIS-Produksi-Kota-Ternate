@@ -53,6 +53,27 @@ const selectedZoneTypes = new Set(['fish', 'agriculture']);
 let activeCommodityMetric = 'all';
 let zonesVisible = true;
 let markersRendered = false;
+let selectedDistrictName = 'Ternate Utara';
+
+function getActiveProduction(district) {
+  if (activeCommodityMetric === 'fish') {
+    return { value: district.production.ikan, label: 'Produksi Perikanan' };
+  }
+  if (activeCommodityMetric === 'agriculture') {
+    return { value: district.production.pertanian, label: 'Produksi Pertanian' };
+  }
+  return { value: district.production.total, label: 'Total Produksi' };
+}
+
+function updateDistrictInfo(district) {
+  if (!district) return;
+  const production = getActiveProduction(district);
+  document.getElementById('info-kecamatan').textContent = ': ' + district.name;
+  document.getElementById('info-komoditas').textContent = ': ' + district.commodity;
+  document.getElementById('info-jenis').textContent = ': ' + district.type_name;
+  document.getElementById('info-produksi').textContent = ': ' + production.value.toLocaleString('id-ID') + ' Ton/Tahun';
+  document.getElementById('info-cluster').textContent = ': ' + clusterLabels[district.cluster];
+}
 
 function populateMarkerSelect(markers) {
   const markerSelect = document.getElementById('marker-select');
@@ -124,14 +145,11 @@ function renderDataset(dataset) {
   });
 
   polygon.on('click', function () {
-    const production = district.production;
-    document.getElementById('info-kecamatan').textContent = ': ' + district.name;
-    document.getElementById('info-komoditas').textContent = ': ' + district.commodity;
-    document.getElementById('info-jenis').textContent = ': ' + district.type_name;
-    document.getElementById('info-produksi').textContent = ': ' + production.total.toLocaleString('id-ID') + ' Ton/Tahun';
-    document.getElementById('info-cluster').textContent = ': ' + clusterLabels[district.cluster];
+    selectedDistrictName = district.name;
+    updateDistrictInfo(district);
   });
   });
+  updateDistrictInfo(districtData.find((district) => district.name === selectedDistrictName) || districtData[0]);
   if (zoneBounds.getLayers().length) {
     map.fitBounds(zoneBounds.getBounds().pad(0.08));
     setTimeout(() => map.invalidateSize(), 80);
@@ -140,13 +158,8 @@ function renderDataset(dataset) {
 }
 
 function bindDistrictPopup(district, polygon) {
-  const production = activeCommodityMetric === 'fish'
-    ? district.production.ikan
-    : activeCommodityMetric === 'agriculture'
-      ? district.production.pertanian
-      : district.production.total;
-  const label = activeCommodityMetric === 'fish' ? 'Produksi Perikanan' : activeCommodityMetric === 'agriculture' ? 'Produksi Pertanian' : 'Total Produksi';
-  polygon.bindPopup(`<div class="custom-popup"><strong>${district.name}</strong>${label}: ${production.toLocaleString('id-ID')} ton<br>${clusterLabels[district.cluster]}</div>`);
+  const production = getActiveProduction(district);
+  polygon.bindPopup(`<div class="custom-popup"><strong>${district.name}</strong>${production.label}: ${production.value.toLocaleString('id-ID')} ton<br>${clusterLabels[district.cluster]}</div>`);
 }
 
 function getCommodityType(type) {
@@ -241,11 +254,6 @@ legend.onAdd = function () {
 };
 legend.addTo(map);
 
-const target = document.getElementById('info-kecamatan');
-if (target) {
-  target.textContent = ': Ternate Utara';
-}
-
 const productionForm = document.getElementById('production-form');
 if (productionForm) {
   productionForm.addEventListener('submit', async (event) => {
@@ -291,6 +299,292 @@ async function loadVerificationList() {
   });
 }
 loadVerificationList();
+
+const datasetPanel = document.getElementById('dataset-panel');
+if (datasetPanel) {
+  const datasetRole = datasetPanel.dataset.role;
+  const isDatasetUser = datasetRole === 'user';
+  const datasetDomain = document.getElementById('dataset-domain');
+  const datasetTable = document.getElementById('dataset-table');
+  const datasetDistrict = document.getElementById('dataset-district');
+  const datasetDistrictField = document.getElementById('dataset-district-field');
+  const datasetForm = document.getElementById('dataset-record-form');
+  const datasetRecordId = document.getElementById('dataset-record-id');
+  const datasetRecordList = document.getElementById('dataset-record-list');
+  const datasetRequestList = document.getElementById('dataset-request-list');
+  const datasetMessage = document.getElementById('dataset-form-message');
+  const datasetSaveButton = document.getElementById('dataset-save-button');
+  const datasetCancelEdit = document.getElementById('dataset-cancel-edit');
+  const datasetDescription = document.getElementById('dataset-panel-description');
+  const agricultureTables = [
+    { value: 'crop_production', label: 'Pertanian per kecamatan', hasDistrict: true },
+    { value: 'horticulture_production', label: 'Pertanian umum', hasDistrict: false },
+  ];
+  const fishTables = [
+    { value: 'fish_production', label: 'Perikanan', hasDistrict: true },
+  ];
+  const districtNames = ['Pulau Ternate', 'Ternate Selatan', 'Ternate Tengah', 'Ternate Utara'];
+  let datasetRecords = [];
+
+  const escapeHtml = (value) => String(value ?? '').replace(/[&<>"']/g, (character) => ({
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#39;',
+  })[character]);
+
+  async function datasetFetch(url, options = {}) {
+    const response = await fetch(url, options);
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || 'Permintaan tidak berhasil');
+    return result;
+  }
+
+  function tableDefinition(tableName) {
+    return [...agricultureTables, ...fishTables].find((table) => table.value === tableName);
+  }
+
+  function resetDatasetForm() {
+    datasetForm.reset();
+    datasetRecordId.value = '';
+    document.getElementById('dataset-year').value = new Date().getFullYear();
+    datasetDistrict.selectedIndex = 0;
+    datasetSaveButton.textContent = isDatasetUser ? 'Ajukan penambahan' : 'Tambah data';
+    datasetCancelEdit.hidden = true;
+    syncDatasetTableFields();
+  }
+
+  function populateDatasetTables() {
+    const tables = datasetDomain.value === 'fish' ? fishTables : agricultureTables;
+    datasetTable.innerHTML = tables.map((table) =>
+      `<option value="${table.value}">${table.label}</option>`
+    ).join('');
+    syncDatasetTableFields();
+  }
+
+  function populateDatasetDistricts(selectedDistrict = '') {
+    datasetDistrict.innerHTML = '<option value="">Pilih kecamatan</option>' + districtNames
+      .map((name) => `<option value="${escapeHtml(name)}">${escapeHtml(name)}</option>`)
+      .join('');
+    if (selectedDistrict) datasetDistrict.value = selectedDistrict;
+  }
+
+  function syncDatasetTableFields() {
+    const definition = tableDefinition(datasetTable.value);
+    const hasDistrict = Boolean(definition?.hasDistrict);
+    datasetDistrictField.hidden = !hasDistrict;
+    datasetDistrict.required = hasDistrict;
+    if (!hasDistrict) datasetDistrict.value = '';
+  }
+
+  function formatRequestPayload(requestRecord) {
+    const values = requestRecord.operation === 'delete'
+      ? requestRecord.original_data
+      : requestRecord.payload;
+    if (!values) return '';
+    const parts = [values.commodity, values.district_name, values.year, values.production_ton]
+      .filter((value) => value !== undefined && value !== null && value !== '');
+    return parts.map(escapeHtml).join(' · ');
+  }
+
+  function renderDatasetRequests(requests) {
+    if (!requests.length) {
+      datasetRequestList.innerHTML = '<p>Tidak ada permintaan dataset.</p>';
+      return;
+    }
+    datasetRequestList.innerHTML = requests.map((item) => {
+      const operationLabels = { create: 'Tambah', update: 'Edit', delete: 'Hapus' };
+      const statusLabels = { pending: 'Menunggu verifikasi', approved: 'Disetujui', rejected: 'Ditolak' };
+      const actions = isDatasetUser ? '' : `
+        <span class="verification-actions">
+          <button class="verify-btn" type="button" data-request-id="${item.id}" data-decision="approved">Setujui</button>
+          <button class="reject-btn" type="button" data-request-id="${item.id}" data-decision="rejected">Tolak</button>
+        </span>`;
+      return `
+        <div class="verification-item dataset-request-item">
+          <span><strong>${operationLabels[item.operation]} · ${escapeHtml(item.table_name)}</strong> · ${formatRequestPayload(item)}<br>
+          <small>${escapeHtml(item.creator_name || 'Anda')} · ${statusLabels[item.status]}</small></span>
+          ${actions}
+        </div>`;
+    }).join('');
+  }
+
+  async function loadDatasetRequests() {
+    try {
+      const result = await datasetFetch(`/api/commodity-requests?domain=${datasetDomain.value}`);
+      renderDatasetRequests(result);
+    } catch (error) {
+      datasetRequestList.textContent = error.message;
+    }
+  }
+
+  async function loadDatasetRecords() {
+    datasetRecordList.textContent = 'Memuat data...';
+    try {
+      const result = await datasetFetch(`/api/commodity-data?domain=${datasetDomain.value}`);
+      datasetRecords = result.records;
+      renderDatasetRecords();
+    } catch (error) {
+      datasetRecordList.textContent = error.message;
+    }
+  }
+
+  function renderDatasetRecords() {
+    if (!datasetRecords.length) {
+      datasetRecordList.innerHTML = '<p>Belum ada data pada bidang ini.</p>';
+      return;
+    }
+    const rows = datasetRecords.map((record) => `
+      <tr>
+        <td>${escapeHtml(record.district_name || '-')}</td>
+        <td>${escapeHtml(record.commodity)}</td>
+        <td>${record.year}</td>
+        <td>${Number(record.production_ton).toLocaleString('id-ID')}</td>
+        <td class="dataset-row-actions">
+          <button class="edit-dataset-btn" type="button" data-table="${record.table_name}" data-record-id="${record.id}">${isDatasetUser ? 'Ajukan edit' : 'Edit'}</button>
+          <button class="delete-dataset-btn" type="button" data-table="${record.table_name}" data-record-id="${record.id}">${isDatasetUser ? 'Ajukan hapus' : 'Hapus'}</button>
+        </td>
+      </tr>`).join('');
+    datasetRecordList.innerHTML = `
+      <div class="dataset-table-scroll">
+        <table class="dataset-table">
+          <thead><tr><th>Kecamatan</th><th>Komoditas</th><th>Tahun</th><th>Produksi (ton)</th><th>Aksi</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>`;
+  }
+
+  function editDatasetRecord(tableName, recordId) {
+    const record = datasetRecords.find((item) =>
+      item.table_name === tableName && item.id === Number(recordId)
+    );
+    if (!record) return;
+    datasetTable.value = tableName;
+    syncDatasetTableFields();
+    datasetRecordId.value = record.id;
+    datasetDistrict.value = record.district_name || '';
+    document.getElementById('dataset-commodity').value = record.commodity;
+    document.getElementById('dataset-year').value = record.year;
+    document.getElementById('dataset-production').value = record.production_ton;
+    datasetSaveButton.textContent = isDatasetUser ? 'Ajukan perubahan' : 'Simpan perubahan';
+    datasetCancelEdit.hidden = false;
+    datasetMessage.textContent = '';
+    datasetForm.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }
+
+  async function requestDatasetChange(operation, tableName, recordId = null, entry = null) {
+    return datasetFetch('/api/commodity-requests', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        domain: datasetDomain.value,
+        table_name: tableName,
+        operation,
+        record_id: recordId,
+        data: entry,
+      }),
+    });
+  }
+
+  datasetForm.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const entry = Object.fromEntries(new FormData(datasetForm));
+    const tableName = datasetTable.value;
+    const recordId = datasetRecordId.value;
+    const operation = recordId ? 'update' : 'create';
+    let result;
+    try {
+      if (isDatasetUser) {
+        result = await requestDatasetChange(operation, tableName, recordId || null, entry);
+      } else if (recordId) {
+        result = await datasetFetch(`/api/commodity-data/${tableName}/${recordId}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ...entry, domain: datasetDomain.value }),
+        });
+      } else {
+        result = await datasetFetch('/api/commodity-data', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ...entry, domain: datasetDomain.value, table_name: tableName }),
+        });
+      }
+      datasetMessage.textContent = result.message;
+      datasetMessage.style.color = '#3d8a59';
+      resetDatasetForm();
+      await loadDatasetRecords();
+      await loadDatasetRequests();
+    } catch (error) {
+      datasetMessage.textContent = error.message;
+      datasetMessage.style.color = '#b34235';
+    }
+  });
+
+  datasetRecordList.addEventListener('click', async (event) => {
+    const button = event.target.closest('button[data-record-id]');
+    if (!button) return;
+    const { table, recordId } = button.dataset;
+    if (button.classList.contains('edit-dataset-btn')) {
+      editDatasetRecord(table, recordId);
+      return;
+    }
+    if (!window.confirm(isDatasetUser ? 'Ajukan penghapusan data ini?' : 'Hapus data ini?')) return;
+    try {
+      const result = isDatasetUser
+        ? await requestDatasetChange('delete', table, recordId)
+        : await datasetFetch(`/api/commodity-data/${table}/${recordId}`, {
+          method: 'DELETE',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ domain: datasetDomain.value }),
+        });
+      datasetMessage.textContent = result.message;
+      datasetMessage.style.color = '#3d8a59';
+      await loadDatasetRecords();
+      await loadDatasetRequests();
+    } catch (error) {
+      datasetMessage.textContent = error.message;
+      datasetMessage.style.color = '#b34235';
+    }
+  });
+
+  datasetRequestList.addEventListener('click', async (event) => {
+    const button = event.target.closest('button[data-request-id]');
+    if (!button) return;
+    try {
+      const result = await datasetFetch(`/api/commodity-requests/${button.dataset.requestId}/review`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: button.dataset.decision }),
+      });
+      datasetMessage.textContent = result.message;
+      datasetMessage.style.color = '#3d8a59';
+      await loadDatasetRecords();
+      await loadDatasetRequests();
+    } catch (error) {
+      datasetMessage.textContent = error.message;
+      datasetMessage.style.color = '#b34235';
+    }
+  });
+
+  datasetDomain.addEventListener('change', () => {
+    resetDatasetForm();
+    populateDatasetTables();
+    loadDatasetRecords();
+    loadDatasetRequests();
+  });
+  datasetTable.addEventListener('change', syncDatasetTableFields);
+  datasetCancelEdit.addEventListener('click', resetDatasetForm);
+  datasetDomain.value = datasetRole === 'admin_perikanan' ? 'fish' : 'agriculture';
+  populateDatasetDistricts();
+  populateDatasetTables();
+  resetDatasetForm();
+  datasetDescription.textContent = isDatasetUser
+    ? 'Tambah, edit, dan hapus akan menunggu persetujuan admin bidang terkait.'
+    : 'Perubahan langsung berlaku. Permintaan user hanya menampilkan bidang admin ini.';
+  loadDatasetRecords();
+  loadDatasetRequests();
+}
 
 const layerDialog = document.getElementById('layer-dialog');
 const aboutDialog = document.getElementById('about-dialog');

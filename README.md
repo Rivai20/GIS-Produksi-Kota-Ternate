@@ -7,9 +7,12 @@ Aplikasi web Flask untuk menampilkan peta sebaran produksi perikanan dan pertani
 - Peta polygon kecamatan dan marker lokasi produksi.
 - Filter zona perikanan dan pertanian.
 - Ringkasan produksi per kecamatan.
-- Data perikanan, tanaman pangan, dan hortikultura berdasarkan tahun terbaru yang tersedia.
+- Data perikanan dan pertanian berdasarkan tahun terbaru yang tersedia.
 - Pengajuan data produksi oleh pengguna.
 - Verifikasi atau penolakan data oleh admin.
+- CRUD data komoditas perikanan dan pertanian.
+- Admin dapat menambah, mengedit, dan menghapus data langsung sesuai bidangnya.
+- Pengguna dapat mengajukan tambah, edit, dan hapus; perubahan baru berlaku setelah disetujui admin bidang terkait.
 - Admin perikanan hanya dapat memverifikasi data perikanan.
 - Admin pertanian hanya dapat memverifikasi data pertanian.
 - Data terverifikasi menggantikan ringkasan impor untuk jenis produksi yang sama.
@@ -98,9 +101,11 @@ Koneksi database dapat diatur melalui environment variable berikut:
 
 ## Alur Data
 
-Data impor disimpan pada tabel `fish_production`, `crop_production`, dan `horticulture_production`. Endpoint `/api/dataset` memilih tahun maksimum dari tabel rincian tersebut.
+Data disimpan pada tabel `fish_production`, `crop_production`, dan `horticulture_production`. Admin perikanan mengelola `fish_production`; admin pertanian mengelola dataset pertanian yang disimpan pada `crop_production` dan `horticulture_production`. Nama pada antarmuka dikelompokkan sebagai Perikanan dan Pertanian. Pengguna dapat meminta mutasi untuk kedua bidang, tetapi data baru berubah setelah disetujui admin sesuai bidang.
 
-Pengajuan pengguna masuk ke `production_records` dengan status `pending`. Admin hanya dapat memproses data sesuai bidangnya. Setelah berstatus `verified`, nilai tersebut menjadi ringkasan aktif untuk jenis produksi di kecamatan terkait. Status `rejected` tidak digunakan dalam ringkasan.
+Permintaan CRUD user tercatat pada `dataset_change_requests`, termasuk nilai sebelum perubahan untuk edit/hapus. Persetujuan yang sudah kedaluwarsa ditolak jika data target telah berubah. `production_records` tetap dipakai untuk pengajuan produksi berbasis marker yang tampil di peta. Kedua antrean hanya dapat diproses oleh admin bidang yang cocok.
+
+Endpoint `/api/dataset` memilih tahun maksimum dari tabel ikan dan pertanian untuk ringkasan peta. Kedua tabel pertanian tetap tersedia melalui panel CRUD.
 
 ## Catatan Keamanan
 

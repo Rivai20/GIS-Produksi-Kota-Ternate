@@ -56,6 +56,109 @@ def is_fish_type(type_name):
     return type_name in ('fish', 'Hasil Tangkapan Ikan')
 
 
+DATASET_TABLES = {
+    'fish': {'fish_production': True},
+    'agriculture': {
+        'crop_production': True,
+        'horticulture_production': False,
+    },
+}
+DATASET_FIELDS = {
+    'fish_production': ('district_name', 'commodity', 'year', 'production_ton'),
+    'crop_production': ('district_name', 'commodity', 'year', 'production_ton'),
+    'horticulture_production': ('commodity', 'year', 'production_ton'),
+}
+
+
+def dataset_domain_for_role(role):
+    if role == 'admin_perikanan':
+        return 'fish'
+    if role == 'admin_pertanian':
+        return 'agriculture'
+    return None
+
+
+def dataset_table_config(domain, table_name):
+    tables = DATASET_TABLES.get(domain, {})
+    if table_name not in tables:
+        return None
+    return {'has_district': tables[table_name]}
+
+
+def serialize_dataset_row(row):
+    if row is None:
+        return None
+    return {
+        key: format(value, 'f') if isinstance(value, Decimal) else value
+        for key, value in row.items()
+    }
+
+
+def decode_json_value(value):
+    if isinstance(value, str):
+        return json.loads(value)
+    return value
+
+
+def validate_dataset_entry(data, table_name):
+    domain = next((key for key, tables in DATASET_TABLES.items() if table_name in tables), None)
+    config = dataset_table_config(domain, table_name)
+    if config is None:
+        return None, 'Tabel dataset tidak valid'
+
+    commodity = str(data.get('commodity', '')).strip()
+    if not commodity or len(commodity) > 100:
+        return None, 'Nama komoditas wajib diisi dan maksimal 100 karakter'
+
+    entry = {'commodity': commodity}
+    if config['has_district']:
+        district_name = str(data.get('district_name', '')).strip()
+        if not district_name or len(district_name) > 40:
+            return None, 'Kecamatan wajib diisi dan maksimal 40 karakter'
+        entry['district_name'] = district_name
+
+    try:
+        year = int(data.get('year'))
+    except (TypeError, ValueError):
+        return None, 'Tahun harus berupa angka yang valid'
+    if year < 1900 or year > 2100:
+        return None, 'Tahun harus berada antara 1900 dan 2100'
+
+    try:
+        production = Decimal(str(data.get('production_ton', '')))
+    except (InvalidOperation, ValueError):
+        return None, 'Produksi harus berupa angka yang valid'
+    if not production.is_finite() or production < 0 or production > Decimal('1000000'):
+        return None, 'Produksi harus antara 0 dan 1.000.000 ton'
+
+    entry['year'] = year
+    entry['production_ton'] = format(production.quantize(Decimal('0.001')), '.3f')
+    return entry, None
+
+
+def insert_dataset_entry(cursor, table_name, entry, source_file):
+    fields = DATASET_FIELDS[table_name] + ('source_file',)
+    columns = ', '.join(f'`{field}`' for field in fields)
+    placeholders = ', '.join(['%s'] * len(fields))
+    values = tuple(entry[field] for field in DATASET_FIELDS[table_name]) + (source_file,)
+    cursor.execute(
+        f'INSERT INTO `{table_name}` ({columns}) VALUES ({placeholders})',
+        values,
+    )
+
+
+def update_dataset_entry(cursor, table_name, record_id, entry):
+    assignments = ', '.join(f'`{field}` = %s' for field in entry)
+    cursor.execute(
+        f'UPDATE `{table_name}` SET {assignments} WHERE id = %s',
+        tuple(entry.values()) + (record_id,),
+    )
+
+
+def row_matches_snapshot(current, snapshot):
+    return serialize_dataset_row(current) == snapshot
+
+
 def calculate_clusters(districts, metric='all', cluster_count=3):
     if len(districts) < cluster_count:
         return
@@ -330,14 +433,280 @@ def verify_production(record_id):
 def delete_production(record_id):
     connection = get_db_connection()
     cursor = connection.cursor()
+    cursor.execute('SELECT type_name FROM production_records WHERE id = %s', (record_id,))
+    record = cursor.fetchone()
+    if record is None:
+        cursor.close()
+        connection.close()
+        return jsonify({'error': 'Data produksi tidak ditemukan'}), 404
+    record_type = 'fish' if is_fish_type(record[0]) else 'agriculture'
+    if record_type != allowed_production_type(current_user()['role']):
+        cursor.close()
+        connection.close()
+        return jsonify({'error': 'Admin hanya dapat menghapus data sesuai bidangnya'}), 403
     cursor.execute('DELETE FROM production_records WHERE id = %s', (record_id,))
     connection.commit()
-    deleted = cursor.rowcount
     cursor.close()
     connection.close()
-    if not deleted:
-        return jsonify({'error': 'Data produksi tidak ditemukan'}), 404
     return jsonify({'message': 'Data produksi berhasil dihapus'})
+
+
+@app.route('/api/commodity-data', methods=['GET', 'POST'])
+@login_required
+def commodity_data():
+    role = current_user()['role']
+    if request.method == 'GET':
+        domain = request.args.get('domain', '')
+        role_domain = dataset_domain_for_role(role)
+        if role_domain and domain and domain != role_domain:
+            return jsonify({'error': 'Admin hanya dapat mengakses dataset sesuai bidangnya'}), 403
+        domain = role_domain or domain
+        tables = DATASET_TABLES.get(domain)
+        if tables is None:
+            return jsonify({'error': 'Domain dataset tidak valid'}), 400
+
+        connection = get_db_connection()
+        cursor = connection.cursor(dictionary=True)
+        records = []
+        for table_name in tables:
+            cursor.execute(f'SELECT * FROM `{table_name}` ORDER BY year DESC, commodity')
+            for record in cursor.fetchall():
+                record['table_name'] = table_name
+                record['production_ton'] = float(record['production_ton'])
+                records.append(record)
+        cursor.close()
+        connection.close()
+        return jsonify({'domain': domain, 'records': records})
+
+    if role not in ('admin_pertanian', 'admin_perikanan'):
+        return jsonify({'error': 'Gunakan pengajuan untuk meminta perubahan data'}), 403
+    data = request.get_json(silent=True) or {}
+    domain = data.get('domain', '')
+    table_name = data.get('table_name', '')
+    if domain != dataset_domain_for_role(role) or dataset_table_config(domain, table_name) is None:
+        return jsonify({'error': 'Admin hanya dapat mengelola dataset sesuai bidangnya'}), 403
+    entry, error = validate_dataset_entry(data, table_name)
+    if error:
+        return jsonify({'error': error}), 400
+
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        insert_dataset_entry(cursor, table_name, entry, 'Input manual admin')
+        connection.commit()
+        return jsonify({'id': cursor.lastrowid, 'message': 'Data berhasil ditambahkan'}), 201
+    except mysql.connector.IntegrityError:
+        connection.rollback()
+        return jsonify({'error': 'Data dengan kecamatan, komoditas, dan tahun tersebut sudah ada'}), 409
+    finally:
+        cursor.close()
+        connection.close()
+
+
+@app.route('/api/commodity-data/<table_name>/<int:record_id>', methods=['PATCH', 'DELETE'])
+@roles_required('admin_pertanian', 'admin_perikanan')
+def mutate_commodity_data(table_name, record_id):
+    data = request.get_json(silent=True) or {}
+    domain = data.get('domain', '')
+    if (domain != dataset_domain_for_role(current_user()['role'])
+            or dataset_table_config(domain, table_name) is None):
+        return jsonify({'error': 'Admin hanya dapat mengelola dataset sesuai bidangnya'}), 403
+
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        if request.method == 'DELETE':
+            cursor.execute(f'DELETE FROM `{table_name}` WHERE id = %s', (record_id,))
+            if not cursor.rowcount:
+                connection.rollback()
+                return jsonify({'error': 'Data komoditas tidak ditemukan'}), 404
+            connection.commit()
+            return jsonify({'message': 'Data berhasil dihapus'})
+
+        entry, error = validate_dataset_entry(data, table_name)
+        if error:
+            return jsonify({'error': error}), 400
+        cursor.execute(f'SELECT id FROM `{table_name}` WHERE id = %s', (record_id,))
+        if cursor.fetchone() is None:
+            connection.rollback()
+            return jsonify({'error': 'Data komoditas tidak ditemukan'}), 404
+        update_dataset_entry(cursor, table_name, record_id, entry)
+        connection.commit()
+        return jsonify({'message': 'Data berhasil diperbarui'})
+    except mysql.connector.IntegrityError:
+        connection.rollback()
+        return jsonify({'error': 'Perubahan membuat duplikat kecamatan, komoditas, dan tahun'}), 409
+    finally:
+        cursor.close()
+        connection.close()
+
+
+@app.route('/api/commodity-requests', methods=['GET', 'POST'])
+@login_required
+def commodity_requests():
+    role = current_user()['role']
+    if request.method == 'GET':
+        connection = get_db_connection()
+        cursor = connection.cursor(dictionary=True)
+        if role in ('admin_pertanian', 'admin_perikanan'):
+            domain = dataset_domain_for_role(role)
+            cursor.execute('''
+                SELECT requests.*, creator.full_name AS creator_name
+                FROM dataset_change_requests requests
+                JOIN users creator ON creator.id = requests.created_by
+                WHERE requests.domain = %s AND requests.status = 'pending'
+                ORDER BY requests.created_at DESC
+            ''', (domain,))
+        else:
+            domain = request.args.get('domain')
+            if domain and domain not in DATASET_TABLES:
+                cursor.close()
+                connection.close()
+                return jsonify({'error': 'Domain dataset tidak valid'}), 400
+            query = '''
+                SELECT requests.*, reviewer.full_name AS reviewer_name
+                FROM dataset_change_requests requests
+                LEFT JOIN users reviewer ON reviewer.id = requests.reviewed_by
+                WHERE requests.created_by = %s
+            '''
+            params = [current_user()['id']]
+            if domain:
+                query += ' AND requests.domain = %s'
+                params.append(domain)
+            query += ' ORDER BY requests.created_at DESC'
+            cursor.execute(query, params)
+        records = cursor.fetchall()
+        for record in records:
+            record['payload'] = decode_json_value(record['payload'])
+            record['original_data'] = decode_json_value(record['original_data'])
+        cursor.close()
+        connection.close()
+        return jsonify(records)
+
+    if role != 'user':
+        return jsonify({'error': 'Admin mengelola perubahan langsung dari panel dataset'}), 403
+    data = request.get_json(silent=True) or {}
+    domain = data.get('domain', '')
+    table_name = data.get('table_name', '')
+    operation = data.get('operation', '')
+    if dataset_table_config(domain, table_name) is None:
+        return jsonify({'error': 'Tabel tidak sesuai dengan domain dataset'}), 400
+    if operation not in ('create', 'update', 'delete'):
+        return jsonify({'error': 'Operasi perubahan tidak valid'}), 400
+
+    record_id = None
+    original_data = None
+    payload = {}
+    if operation in ('update', 'delete'):
+        try:
+            record_id = int(data.get('record_id'))
+        except (TypeError, ValueError):
+            return jsonify({'error': 'Data target tidak valid'}), 400
+        if record_id <= 0:
+            return jsonify({'error': 'Data target tidak valid'}), 400
+    if operation in ('create', 'update'):
+        payload, error = validate_dataset_entry(data.get('data') or {}, table_name)
+        if error:
+            return jsonify({'error': error}), 400
+
+    connection = get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+    try:
+        if operation in ('update', 'delete'):
+            cursor.execute(
+                f'SELECT * FROM `{table_name}` WHERE id = %s FOR UPDATE',
+                (record_id,),
+            )
+            target = cursor.fetchone()
+            if target is None:
+                connection.rollback()
+                return jsonify({'error': 'Data komoditas tidak ditemukan'}), 404
+            original_data = serialize_dataset_row(target)
+
+        cursor.execute('''
+            INSERT INTO dataset_change_requests
+                (domain, table_name, operation, record_id, payload, original_data, created_by)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+        ''', (domain, table_name, operation, record_id, json.dumps(payload),
+              json.dumps(original_data) if original_data is not None else None,
+              current_user()['id']))
+        request_id = cursor.lastrowid
+        connection.commit()
+        return jsonify({
+            'id': request_id,
+            'message': 'Permintaan perubahan dikirim dan menunggu verifikasi admin bidang terkait',
+        }), 201
+    finally:
+        cursor.close()
+        connection.close()
+
+
+@app.route('/api/commodity-requests/<int:request_id>/review', methods=['PATCH'])
+@roles_required('admin_pertanian', 'admin_perikanan')
+def review_commodity_request(request_id):
+    data = request.get_json(silent=True) or {}
+    decision = data.get('status')
+    if decision not in ('approved', 'rejected'):
+        return jsonify({'error': 'Keputusan harus approved atau rejected'}), 400
+
+    connection = get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+    try:
+        cursor.execute(
+            'SELECT * FROM dataset_change_requests WHERE id = %s FOR UPDATE',
+            (request_id,),
+        )
+        change_request = cursor.fetchone()
+        if change_request is None:
+            connection.rollback()
+            return jsonify({'error': 'Permintaan tidak ditemukan'}), 404
+        if change_request['domain'] != dataset_domain_for_role(current_user()['role']):
+            connection.rollback()
+            return jsonify({'error': 'Admin hanya dapat memproses permintaan sesuai bidangnya'}), 403
+        if change_request['status'] != 'pending':
+            connection.rollback()
+            return jsonify({'error': 'Permintaan ini sudah diproses'}), 409
+
+        table_name = change_request['table_name']
+        operation = change_request['operation']
+        payload = decode_json_value(change_request['payload'])
+        original_data = decode_json_value(change_request['original_data'])
+        if decision == 'approved':
+            if operation == 'create':
+                insert_dataset_entry(cursor, table_name, payload, 'Permohonan user')
+            else:
+                cursor.execute(
+                    f'SELECT * FROM `{table_name}` WHERE id = %s FOR UPDATE',
+                    (change_request['record_id'],),
+                )
+                current_record = serialize_dataset_row(cursor.fetchone())
+                if current_record is None:
+                    connection.rollback()
+                    return jsonify({'error': 'Data target sudah tidak tersedia'}), 409
+                if not row_matches_snapshot(current_record, original_data):
+                    connection.rollback()
+                    return jsonify({'error': 'Data target berubah sejak permintaan dibuat'}), 409
+                if operation == 'update':
+                    update_dataset_entry(cursor, table_name, change_request['record_id'], payload)
+                else:
+                    cursor.execute(
+                        f'DELETE FROM `{table_name}` WHERE id = %s',
+                        (change_request['record_id'],),
+                    )
+
+        cursor.execute('''
+            UPDATE dataset_change_requests
+            SET status = %s, reviewed_by = %s, reviewed_at = CURRENT_TIMESTAMP
+            WHERE id = %s
+        ''', (decision, current_user()['id'], request_id))
+        connection.commit()
+        return jsonify({'message': f'Permintaan berhasil {decision}'})
+    except mysql.connector.IntegrityError:
+        connection.rollback()
+        return jsonify({'error': 'Perubahan membuat duplikat data pada dataset'}), 409
+    finally:
+        cursor.close()
+        connection.close()
 
 
 if __name__ == '__main__':

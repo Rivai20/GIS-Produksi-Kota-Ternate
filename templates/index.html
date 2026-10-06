@@ -141,6 +141,57 @@
     </section>
     {% endif %}
 
+    {% if session.get('user') %}
+    <section class="management-panel dataset-panel" id="dataset-panel" data-role="{{ session['user']['role'] }}">
+      <div class="dataset-panel-heading">
+        <div>
+          <h3>{% if session['user']['role'] == 'user' %}Ajukan Perubahan Dataset{% else %}Kelola Dataset{% endif %}</h3>
+          <p id="dataset-panel-description">Memuat data dataset...</p>
+        </div>
+        <label class="dataset-domain-control" for="dataset-domain">Bidang
+          <select id="dataset-domain" name="domain">
+            {% if session['user']['role'] == 'admin_perikanan' %}
+              <option value="fish">Perikanan</option>
+            {% elif session['user']['role'] == 'admin_pertanian' %}
+              <option value="agriculture">Pertanian</option>
+            {% else %}
+              <option value="agriculture">Pertanian</option>
+              <option value="fish">Perikanan</option>
+            {% endif %}
+          </select>
+        </label>
+      </div>
+      <form id="dataset-record-form" class="dataset-form">
+        <input id="dataset-record-id" type="hidden" />
+        <label for="dataset-table">Dataset
+          <select id="dataset-table" required></select>
+        </label>
+        <label id="dataset-district-field" for="dataset-district">Kecamatan
+          <select id="dataset-district" name="district_name"></select>
+        </label>
+        <label for="dataset-commodity">Komoditas
+          <input id="dataset-commodity" name="commodity" maxlength="100" required />
+        </label>
+        <label for="dataset-year">Tahun
+          <input id="dataset-year" name="year" type="number" min="1900" max="2100" required />
+        </label>
+        <label for="dataset-production">Produksi (ton)
+          <input id="dataset-production" name="production_ton" type="number" min="0" max="1000000" step="0.001" required />
+        </label>
+        <div class="dataset-form-actions">
+          <button class="primary-btn" id="dataset-save-button" type="submit">{% if session['user']['role'] == 'user' %}Ajukan penambahan{% else %}Tambah data{% endif %}</button>
+          <button class="secondary-btn" id="dataset-cancel-edit" type="button" hidden>Batal edit</button>
+        </div>
+      </form>
+      <p id="dataset-form-message" class="form-message" aria-live="polite"></p>
+      <div class="dataset-record-list" id="dataset-record-list" aria-live="polite">Memuat data...</div>
+      <div class="dataset-request-section">
+        <h4>{% if session['user']['role'] == 'user' %}Status permintaan saya{% else %}Permintaan menunggu verifikasi{% endif %}</h4>
+        <div id="dataset-request-list">Memuat permintaan...</div>
+      </div>
+    </section>
+    {% endif %}
+
     {% if session.get('user') and session['user']['role'] in ['admin_pertanian', 'admin_perikanan'] %}
     <section class="management-panel admin-panel">
       <div>

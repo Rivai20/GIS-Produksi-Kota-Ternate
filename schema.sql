@@ -58,13 +58,13 @@ CREATE TABLE IF NOT EXISTS production_records (
 
 CREATE TABLE IF NOT EXISTS crop_production (
   id INT AUTO_INCREMENT PRIMARY KEY,
-  district_name VARCHAR(100) NOT NULL,
-  commodity VARCHAR(150) NOT NULL,
+  district_name VARCHAR(40) NOT NULL,
+  commodity VARCHAR(100) NOT NULL,
   year SMALLINT NOT NULL,
   production_ton DECIMAL(12,3) NOT NULL,
   source_file VARCHAR(255) NOT NULL,
   UNIQUE KEY crop_record (district_name, commodity, year)
-);
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS horticulture_production (
   id INT AUTO_INCREMENT PRIMARY KEY,
@@ -77,16 +77,39 @@ CREATE TABLE IF NOT EXISTS horticulture_production (
 
 CREATE TABLE IF NOT EXISTS fish_production (
   id INT AUTO_INCREMENT PRIMARY KEY,
-  district_name VARCHAR(100) NOT NULL,
-  commodity VARCHAR(150) NOT NULL,
+  district_name VARCHAR(40) NOT NULL,
+  commodity VARCHAR(100) NOT NULL,
   year SMALLINT NOT NULL,
   production_ton DECIMAL(12,3) NOT NULL,
   source_file VARCHAR(255) NOT NULL,
   UNIQUE KEY fish_record (district_name, commodity, year)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS dataset_change_requests (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  domain ENUM('fish', 'agriculture') NOT NULL,
+  table_name ENUM('fish_production', 'crop_production', 'horticulture_production') NOT NULL,
+  operation ENUM('create', 'update', 'delete') NOT NULL,
+  record_id INT NULL,
+  payload JSON NOT NULL,
+  original_data JSON NULL,
+  status ENUM('pending', 'approved', 'rejected') NOT NULL DEFAULT 'pending',
+  created_by INT NOT NULL,
+  reviewed_by INT NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  reviewed_at TIMESTAMP NULL DEFAULT NULL,
+  CONSTRAINT fk_dataset_request_creator FOREIGN KEY (created_by) REFERENCES users(id),
+  CONSTRAINT fk_dataset_request_reviewer FOREIGN KEY (reviewed_by) REFERENCES users(id),
+  KEY dataset_request_queue (domain, status, created_at)
 );
 
+INSERT IGNORE INTO users (username, password_hash, full_name, role) VALUES
+('admin_pertanian', 'scrypt:32768:8:1$ADfdMuDMVLa5ghSZ$ed2fb074898cf9e015cc5f8b8dd5432494bfcebe7642e24483dd52b930bfd44a182f0f3b64559929d021cd474e4a8497bac2bf19e4dfec150a867ba67f2e6727', 'Admin Dinas Pertanian', 'admin_pertanian'),
+('admin_perikanan', 'scrypt:32768:8:1$oRPRvBMXYyeKS2cr$8b7aa146d42dbf252231915535afa443bf7db0052ac27ecc609b11feeedb9e9a0601f2ed5d5c4be3a563e3249dbc192fe6f9b7d593d197929b80b9ac4584e74a', 'Admin Dinas Perikanan', 'admin_perikanan'),
+('user', 'scrypt:32768:8:1$Lm7SU8PUcCTb5IsE$040ca003eac9482dbce3ab0afa8b8c5fb9010f7417e18011a2265e155b14792a2ed2ecf130853f914f71a59ff22b4c9fdc0dba813211f7c576d4fb0a9f58c1b5', 'Pengguna Usaha', 'user');
+
 -- Snapshot dataset gis_ternate dari phpMyAdmin, 2026-10-06.
--- Akun dan pengajuan pengguna tidak disertakan.
+-- Pengajuan pengguna aktual tidak disertakan.
 DELETE FROM crop_production;
 DELETE FROM fish_production;
 DELETE FROM horticulture_production;

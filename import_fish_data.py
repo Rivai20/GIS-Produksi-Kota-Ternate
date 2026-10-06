@@ -103,13 +103,13 @@ def main():
     cursor.execute('''
       CREATE TABLE IF NOT EXISTS fish_production (
         id INT AUTO_INCREMENT PRIMARY KEY,
-        district_name VARCHAR(100) NOT NULL,
-        commodity VARCHAR(150) NOT NULL,
+                district_name VARCHAR(40) NOT NULL,
+                commodity VARCHAR(100) NOT NULL,
         year SMALLINT NOT NULL,
         production_ton DECIMAL(12,3) NOT NULL,
         source_file VARCHAR(255) NOT NULL,
         UNIQUE KEY fish_record (district_name, commodity, year)
-      )
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     ''')
     for row in fish_rows:
         cursor.execute('''

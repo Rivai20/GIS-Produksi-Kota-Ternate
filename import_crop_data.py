@@ -25,13 +25,13 @@ cursor = connection.cursor()
 cursor.execute('''
 CREATE TABLE IF NOT EXISTS crop_production (
   id INT AUTO_INCREMENT PRIMARY KEY,
-  district_name VARCHAR(100) NOT NULL,
-  commodity VARCHAR(150) NOT NULL,
+    district_name VARCHAR(40) NOT NULL,
+    commodity VARCHAR(100) NOT NULL,
   year SMALLINT NOT NULL,
   production_ton DECIMAL(12,3) NOT NULL,
   source_file VARCHAR(255) NOT NULL,
   UNIQUE KEY crop_record (district_name, commodity, year)
-)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
 ''')
 cursor.execute('''
 CREATE TABLE IF NOT EXISTS horticulture_production (
