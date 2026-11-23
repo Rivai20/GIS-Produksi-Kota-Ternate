@@ -97,20 +97,35 @@ def build_synthetic_markers():
             'emoji': '🐟',
             'latitude': Decimal('0.794552'),
             'longitude': Decimal('127.389540'),
-            'district_name': 'Ternate Selatan',
+            'district_name': 'Ternate Tengah',
             'contact_name': 'Gamalama Fisheries',
             'contact_phone': '0812-2100-3002',
         },
     ]
 
 
-def get_admin_welcome_message(role):
-    if role in ('admin_pertanian', 'admin_perikanan'):
-        return 'SELAMAT DATANG EKHA'
-    return ''
+def build_synthetic_district_summary():
+    summary = {}
+    synthetic_values = {
+        'Bastiong Talangame': Decimal('8.5'),
+        'Gamalama': Decimal('12.5'),
+    }
 
+    for marker in build_synthetic_markers():
+        metric_value = synthetic_values.get(marker['label'])
+        if metric_value is None or marker.get('type_name') != 'fish':
+            continue
 
-app.jinja_env.globals['get_admin_welcome_message'] = get_admin_welcome_message
+        district_name = marker['district_name']
+        if marker['label'] == 'Gamalama':
+            district_name = 'Ternate Tengah'
+
+        district_summary = summary.setdefault(district_name, {})
+        district_summary['ikan'] = float(
+            Decimal(str(district_summary.get('ikan', 0))) + metric_value
+        )
+
+    return summary
 
 
 def format_production_display(value):
@@ -131,13 +146,6 @@ def validate_runtime_rules():
     text = format_production_display(12.5)
     if 'Ton' not in text or 'Kg' not in text:
         raise ValueError('format_production_display tidak menampilkan Ton/Kg')
-
-    if get_admin_welcome_message('admin_perikanan') != 'SELAMAT DATANG EKHA':
-        raise ValueError('Welcome message admin perikanan tidak valid')
-    if get_admin_welcome_message('admin_pertanian') != 'SELAMAT DATANG EKHA':
-        raise ValueError('Welcome message admin pertanian tidak valid')
-    if get_admin_welcome_message('user') != '':
-        raise ValueError('Welcome message user tidak valid')
 
     admin_pertanian_hash = 'scrypt:32768:8:1$ADfdMuDMVLa5ghSZ$ed2fb074898cf9e015cc5f8b8dd5432494bfcebe7642e24483dd52b930bfd44a182f0f3b64559929d021cd474e4a8497bac2bf19e4dfec150a867ba67f2e6727'
     admin_perikanan_hash = 'scrypt:32768:8:1$oRPRvBMXYyeKS2cr$8b7aa146d42dbf252231915535afa443bf7db0052ac27ecc609b11feeedb9e9a0601f2ed5d5c4be3a563e3249dbc192fe6f9b7d593d197929b80b9ac4584e74a'
@@ -189,6 +197,51 @@ def decode_json_value(value):
     return value
 
 
+def normalize_production_value(value, unit='ton'):
+    production = Decimal(str(value))
+    if not production.is_finite() or production < 0:
+        raise ValueError('Produksi harus berupa angka non-negatif yang valid')
+    unit_name = str(unit or 'ton').strip().lower()
+    if unit_name == 'kg':
+        production = production / Decimal('1000')
+    elif unit_name not in ('ton', ''):
+        raise ValueError('Satuan produksi harus ton atau kg')
+    return production
+
+
+def validate_new_marker_payload(data):
+    name = str(data.get('new_marker_name', '')).strip()
+    if not name or len(name) > 100:
+        return None, 'Nama titik baru wajib diisi dan maksimal 100 karakter'
+
+    district_name = str(data.get('new_district_name', '')).strip() or 'Belum ditentukan'
+    if len(district_name) > 100:
+        return None, 'Nama kecamatan titik baru maksimal 100 karakter'
+
+    marker_type = str(data.get('new_marker_type', '')).strip().lower()
+    if marker_type not in ('fish', 'leaf'):
+        return None, 'Jenis titik baru harus Perikanan atau Pertanian'
+
+    try:
+        latitude = Decimal(str(data.get('new_latitude', '')))
+        longitude = Decimal(str(data.get('new_longitude', '')))
+    except (InvalidOperation, ValueError):
+        return None, 'Koordinat titik baru harus berupa angka yang valid'
+    if latitude < Decimal('-90') or latitude > Decimal('90'):
+        return None, 'Latitude titik baru harus berada antara -90 dan 90'
+    if longitude < Decimal('-180') or longitude > Decimal('180'):
+        return None, 'Longitude titik baru harus berada antara -180 dan 180'
+
+    return {
+        'label': name,
+        'district_name': district_name,
+        'type_name': marker_type,
+        'emoji': '🐟' if marker_type == 'fish' else '🌿',
+        'latitude': latitude,
+        'longitude': longitude,
+    }, None
+
+
 def validate_dataset_entry(data, table_name):
     domain = next((key for key, tables in DATASET_TABLES.items() if table_name in tables), None)
     config = dataset_table_config(domain, table_name)
@@ -214,10 +267,10 @@ def validate_dataset_entry(data, table_name):
         return None, 'Tahun harus berada antara 1900 dan 2100'
 
     try:
-        production = Decimal(str(data.get('production_ton', '')))
+        production = normalize_production_value(data.get('production_ton', ''), data.get('production_unit', 'ton'))
     except (InvalidOperation, ValueError):
         return None, 'Produksi harus berupa angka yang valid'
-    if not production.is_finite() or production < 0 or production > Decimal('1000000'):
+    if production > Decimal('1000000'):
         return None, 'Produksi harus antara 0 dan 1.000.000 ton'
 
     entry['year'] = year
@@ -288,8 +341,7 @@ def calculate_clusters(districts, metric='all', cluster_count=3):
 
 @app.route('/')
 def index():
-    login_message = session.pop('login_message', None)
-    return render_template('index.html', login_message=login_message)
+    return render_template('index.html')
 
 
 @app.route('/forgot-password', methods=['GET', 'POST'])
@@ -378,8 +430,6 @@ def login():
         'full_name': user['full_name'],
         'role': user['role'],
     }
-    if user['role'] in ('admin_pertanian', 'admin_perikanan'):
-        session['login_message'] = 'SELAMAT DATANG EKHA'
     return redirect(url_for('index'))
 
 
@@ -438,6 +488,13 @@ def dataset():
             district_updates = verified_updates.setdefault(row['district_name'], {})
             metric = 'ikan' if is_fish_type(row['type_name']) else 'pertanian'
             district_updates[metric] = district_updates.get(metric, 0) + float(row['production'])
+
+        synthetic_district_summary = build_synthetic_district_summary()
+        for district_name, updates in synthetic_district_summary.items():
+            district_updates = verified_updates.setdefault(district_name, {})
+            for metric, value in updates.items():
+                district_updates[metric] = district_updates.get(metric, 0) + float(value)
+
         cursor.execute('''
             SELECT COLUMN_NAME
             FROM INFORMATION_SCHEMA.COLUMNS
@@ -583,7 +640,7 @@ def dataset():
 
 
 @app.route('/api/production', methods=['GET', 'POST'])
-@login_required
+@roles_required('user', 'admin_pertanian', 'admin_perikanan')
 def production_records():
     connection = get_db_connection()
     cursor = connection.cursor(dictionary=True)
@@ -594,7 +651,13 @@ def production_records():
         )
         params = []
         if current_user()['role'] in ('admin_pertanian', 'admin_perikanan'):
-            query += " WHERE p.status = 'pending' AND p.type_name IN (%s, %s)"
+            status = request.args.get('status', 'pending')
+            if status not in ('pending', 'verified'):
+                cursor.close()
+                connection.close()
+                return jsonify({'error': 'Status data produksi tidak valid'}), 400
+            query += ' WHERE p.status = %s AND p.type_name IN (%s, %s)'
+            params.append(status)
             if allowed_production_type(current_user()['role']) == 'fish':
                 params.extend(['fish', 'Hasil Tangkapan Ikan'])
             else:
@@ -607,13 +670,19 @@ def production_records():
         return jsonify(records)
 
     data = request.get_json(silent=True) or request.form
-    required = ('commodity', 'production', 'marker_id')
+    required = ('commodity', 'production')
     if any(not str(data.get(field, '')).strip() for field in required):
         cursor.close()
         connection.close()
-        return jsonify({'error': 'Komoditas, produksi, dan titik lokasi wajib dipilih'}), 400
+        return jsonify({'error': 'Komoditas dan produksi wajib diisi'}), 400
+
+    production_unit = str(data.get('production_unit', 'ton')).strip().lower()
+    if production_unit not in ('ton', 'kg'):
+        cursor.close()
+        connection.close()
+        return jsonify({'error': 'Satuan produksi harus ton atau kg'}), 400
     try:
-        production = Decimal(str(data['production']))
+        production = normalize_production_value(data['production'], production_unit)
     except (InvalidOperation, ValueError):
         cursor.close()
         connection.close()
@@ -622,15 +691,59 @@ def production_records():
         cursor.close()
         connection.close()
         return jsonify({'error': 'Produksi harus lebih dari 0 dan maksimal 1.000.000 ton'}), 400
-    cursor.execute(
-        'SELECT label, type_name, latitude, longitude FROM production_markers WHERE id = %s',
-        (data['marker_id'],),
-    )
-    marker = cursor.fetchone()
-    if marker is None:
-        cursor.close()
-        connection.close()
-        return jsonify({'error': 'Titik lokasi tidak tersedia. Silakan pilih titik yang ada di peta.'}), 400
+
+    marker_id = str(data.get('marker_id', '')).strip()
+    marker = None
+    if marker_id:
+        cursor.execute(
+            'SELECT label, type_name, latitude, longitude FROM production_markers WHERE id = %s',
+            (marker_id,),
+        )
+        marker = cursor.fetchone()
+        if marker is None:
+            cursor.close()
+            connection.close()
+            return jsonify({'error': 'Titik lokasi tidak tersedia. Silakan pilih titik yang ada di peta.'}), 400
+    else:
+        new_marker, marker_error = validate_new_marker_payload(data)
+        if marker_error:
+            cursor.close()
+            connection.close()
+            return jsonify({'error': marker_error}), 400
+
+        cursor.execute(
+            'SELECT id, label, type_name, latitude, longitude FROM production_markers '
+            'WHERE ABS(latitude - %s) < 0.000001 AND ABS(longitude - %s) < 0.000001 LIMIT 1',
+            (new_marker['latitude'], new_marker['longitude']),
+        )
+        existing_marker = cursor.fetchone()
+        if existing_marker is not None:
+            marker = existing_marker
+        else:
+            cursor.execute(
+                'INSERT INTO production_markers '
+                '(label, value, type_name, emoji, latitude, longitude, district_name, contact_name, contact_phone) '
+                'VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)',
+                (
+                    new_marker['label'],
+                    'Lokasi baru',
+                    new_marker['type_name'],
+                    new_marker['emoji'],
+                    new_marker['latitude'],
+                    new_marker['longitude'],
+                    new_marker['district_name'],
+                    'Pengguna',
+                    '0812-0000-0000',
+                ),
+            )
+            marker = {
+                'id': cursor.lastrowid,
+                'label': new_marker['label'],
+                'type_name': new_marker['type_name'],
+                'latitude': new_marker['latitude'],
+                'longitude': new_marker['longitude'],
+            }
+
     cursor.execute(
         'INSERT INTO production_records '
         '(commodity, production, type_name, latitude, longitude, location, status, created_by) '

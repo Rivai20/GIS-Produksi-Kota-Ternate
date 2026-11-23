@@ -3,213 +3,239 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Peta Sebaran Hasil Tangkapan Ikan dan Hasil Pertanian</title>
+    <title>Dashboard | PetaHasil Ternate</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
     <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}" />
   </head>
-  <body data-role="{{ session.get('user', {}).get('role', '') }}">
-    <header class="topbar">
-      <div class="brand-wrap">
-        <div class="brand-logo">◉</div>
-        <h1>PETA SEBARAN HASIL TANGKAPAN IKAN DAN HASIL PERTANIAN<br />DI KOTA TERNATE, MALUKU UTARA</h1>
-      </div>
-      <nav class="top-actions">
-        <button class="menu-btn" id="layer-toggle" type="button">Layer</button>
-        <button class="menu-btn" id="about-toggle" type="button">Tentang</button>
-        {% if session.get('user') %}
-          <span class="user-chip">Akun aktif</span>
-          <a class="menu-btn admin" href="{{ url_for('logout') }}">Keluar</a>
-        {% else %}
-          <a class="menu-btn admin" href="{{ url_for('login') }}">Masuk</a>
-        {% endif %}
-      </nav>
-    </header>
+  <body class="app-page" data-role="{{ session.get('user', {}).get('role', '') }}">
+    {% set user = session.get('user') %}
+    {% set role = user.get('role', '') if user else '' %}
+    {% set is_admin = role in ['admin_pertanian', 'admin_perikanan'] %}
+    {% set domain = 'fish' if role == 'admin_perikanan' else 'agriculture' %}
+    {% set domain_label = 'perikanan' if role == 'admin_perikanan' else 'pertanian' %}
 
-    <div class="map-dialog layer-dialog" id="layer-dialog" hidden>
-      <div class="dialog-header">
-        <h2>Layer Peta</h2>
-        <button class="dialog-close" data-close-dialog="layer-dialog" type="button" aria-label="Tutup">×</button>
-      </div>
-      <label class="layer-option"><input id="layer-zones" type="checkbox" checked /> Zona kecamatan</label>
-      <label class="layer-option"><input id="layer-markers" type="checkbox" checked /> Titik lokasi produksi</label>
-      <label class="layer-option"><input id="layer-labels" type="checkbox" checked /> Nama lokasi</label>
-      <div class="layer-subtitle">Filter zona kecamatan</div>
-      <label class="layer-option"><input name="zone-filter" type="checkbox" value="fish" {% if session.get('user', {}).get('role') not in ['admin_pertanian', 'admin_perikanan'] or session.get('user', {}).get('role') == 'admin_perikanan' %}checked{% endif %} /> Zona perikanan</label>
-      <label class="layer-option"><input name="zone-filter" type="checkbox" value="agriculture" {% if session.get('user', {}).get('role') not in ['admin_pertanian', 'admin_perikanan'] or session.get('user', {}).get('role') == 'admin_pertanian' %}checked{% endif %} /> Zona pertanian</label>
-      <div class="layer-subtitle">Basemap</div>
-      <label class="layer-option"><input name="basemap" type="radio" value="street" checked /> OpenStreetMap</label>
-      <label class="layer-option"><input name="basemap" type="radio" value="satellite" /> Satelit</label>
-    </div>
-
-    <div class="map-dialog about-dialog" id="about-dialog" hidden>
-      <div class="dialog-header">
-        <h2>Tentang Peta</h2>
-        <button class="dialog-close" data-close-dialog="about-dialog" type="button" aria-label="Tutup">×</button>
-      </div>
-      <p>Peta sebaran hasil tangkapan ikan dan hasil pertanian di Kota Ternate.</p>
-      <dl class="about-list">
-        <dt>Choropleth</dt><dd>Warna zona menunjukkan tingkat produksi berdasarkan cluster K-Means.</dd>
-        <dt>Zona</dt><dd>Batas kecamatan berasal dari file administrasi SHP yang diimpor ke MySQL.</dd>
-        <dt>Point</dt><dd>Marker menunjukkan lokasi produksi yang tersimpan di database, termasuk nama kontak dan nomor telepon jika tersedia.</dd>
-        <dt>Algoritma</dt><dd>K-Means mengelompokkan produksi rendah, sedang, dan tinggi.</dd>
-      </dl>
-    </div>
-
-    {% if login_message %}
-      <div id="login-toast" class="login-toast" data-message="{{ login_message }}">{{ login_message }}</div>
-    {% else %}
-      <div id="login-toast" class="login-toast hidden" data-message=""></div>
-    {% endif %}
-
-    <main class="content-shell">
-      <aside class="sidebar-panel">
-        <div class="panel-header">
-          <h2>Legenda</h2>
-          <div class="panel-tools">
-            <button class="tool-btn">＋</button>
-            <button class="tool-btn">－</button>
-            <button class="tool-btn">⤢</button>
-          </div>
-        </div>
-
-        <div class="legend-block">
-          <p class="block-title">Cluster Produksi (K-Means)</p>
-          <div class="legend-item"><span class="swatch green"></span> Cluster 1 - Produksi Rendah</div>
-          <div class="legend-item"><span class="swatch yellow"></span> Cluster 2 - Produksi Sedang</div>
-          <div class="legend-item"><span class="swatch red"></span> Cluster 3 - Produksi Tinggi</div>
-        </div>
-
-        <div class="legend-block">
-          <p class="block-title">Jenis Komoditas</p>
-          <div class="legend-item icon-row"><span class="dot-marker fish">🐟</span> Hasil Tangkapan Ikan</div>
-          <div class="legend-item icon-row"><span class="dot-marker leaf">🌿</span> Hasil Pertanian</div>
-        </div>
-
-        <div class="legend-block">
-          <p class="block-title">Batas Administrasi</p>
-          <div class="legend-item dashed-row"><span class="dashed-line"></span> Batas Kecamatan</div>
-        </div>
-
+    <div class="app-shell">
+      <aside class="app-sidebar">
+        <a class="app-brand" href="{{ url_for('index') }}" aria-label="PetaHasil Ternate">
+          <span class="brand-mark">◉</span>
+          <span><strong>PetaHasil</strong><small>TERNATE WEBGIS</small></span>
+        </a>
+        <nav class="side-navigation" aria-label="Navigasi utama">
+          <a class="side-nav-link" href="{{ url_for('login') }}">Masuk</a>
+          <button class="side-nav-link active" type="button" data-page-target="dashboard">Dasbor</button>
+          <button class="side-nav-link" type="button" data-page-target="map">Peta sebaran</button>
+          {% if user %}<button class="side-nav-link" type="button" data-page-target="add-data">Tambah data</button>{% endif %}
+          <button class="side-nav-link" type="button" data-page-target="reports">Laporan</button>
+        </nav>
+        <div class="sidebar-footer">Kota Ternate<br />Maluku Utara, 2026</div>
       </aside>
 
-      <section class="map-section">
-        <div id="map"></div>
-        <div class="info-card">
-          <div class="info-card-header">
-            <h3>Informasi Produksi</h3>
-            <button class="close-btn">×</button>
-          </div>
-          <div class="info-body">
-            <div class="info-row"><span>Kecamatan</span><strong id="info-kecamatan">: Ternate Utara</strong></div>
-            <div class="info-row"><span>Komoditas</span><strong id="info-komoditas">: Ikan Cakalang</strong></div>
-            <div class="info-row"><span>Jenis</span><strong id="info-jenis">: Hasil Tangkapan Ikan</strong></div>
-            <div class="info-row"><span>Produksi</span><strong id="info-produksi">: 1.250 Ton/Tahun</strong></div>
-            <div class="info-row"><span>Cluster (K-Means)</span><strong id="info-cluster">: Cluster 3 - Tinggi</strong></div>
-          </div>
-        </div>
-      </section>
-    </main>
-
-    <section class="summary-table-wrap">
-      <div class="summary-table-heading">
-        <h3 id="summary-title">Ringkasan Produksi per Kecamatan</h3>
-        <button id="summary-reset" class="secondary-btn" type="button" hidden>Ringkasan kecamatan</button>
-      </div>
-      <table>
-        <thead id="summary-head">
-          <tr>
-            <th>Kecamatan</th>
-            <th>Produksi Ikan (Ton)</th>
-            <th>Produksi Pertanian (Ton)</th>
-            <th>Total Produksi</th>
-            <th>Cluster</th>
-          </tr>
-        </thead>
-        <tbody></tbody>
-      </table>
-    </section>
-
-    {% if session.get('user') and session['user']['role'] == 'user' %}
-    <section class="management-panel">
-      <div>
-        <h3>Ajukan Data Produksi</h3>
-        <p>Pilih titik lokasi yang tersedia. Data akan menunggu verifikasi admin.</p>
-      </div>
-      <form id="production-form" class="production-form">
-        <input name="commodity" placeholder="Jenis komoditas" required />
-        <input name="production" type="number" step="0.01" placeholder="Produksi (ton)" required />
-        <select name="marker_id" id="marker-select" required>
-          <option value="">Pilih titik lokasi yang tersedia</option>
-        </select>
-        <button class="primary-btn" type="submit">Kirim Data</button>
-      </form>
-      <p id="form-message" class="form-message"></p>
-    </section>
-    {% endif %}
-
-    {% if session.get('user') %}
-    <section class="management-panel dataset-panel" id="dataset-panel" data-role="{{ session['user']['role'] }}">
-      <div class="dataset-panel-heading">
-        <div>
-          <h3>{% if session['user']['role'] == 'user' %}Ajukan Perubahan Dataset{% else %}Kelola Dataset{% endif %}</h3>
-          <p id="dataset-panel-description">Memuat data dataset...</p>
-        </div>
-        <label class="dataset-domain-control" for="dataset-domain">Bidang
-          <select id="dataset-domain" name="domain">
-            {% if session['user']['role'] == 'admin_perikanan' %}
-              <option value="fish">Perikanan</option>
-            {% elif session['user']['role'] == 'admin_pertanian' %}
-              <option value="agriculture">Pertanian</option>
+      <div class="app-main">
+        <header class="topbar app-topbar">
+          <div class="topbar-location">Kota Ternate, Maluku Utara</div>
+          <div class="topbar-actions">
+            <button class="topbar-tool" id="layer-toggle" type="button" hidden>Layer</button>
+            <button class="topbar-tool" id="about-toggle" type="button" hidden>Tentang</button>
+            {% if user %}
+              <span class="user-avatar">{{ 'AP' if is_admin else 'PU' }}</span>
+              <span class="user-identity"><strong>{{ 'Admin Perikanan' if role == 'admin_perikanan' else 'Admin Pertanian' if role == 'admin_pertanian' else user.get('full_name', 'Pengguna') }}</strong><small>{{ 'Pengguna Usaha' if role == 'user' else role.replace('_', ' ').title() }}</small></span>
+              <a class="logout-link" href="{{ url_for('logout') }}">Keluar</a>
             {% else %}
-              <option value="agriculture">Pertanian</option>
-              <option value="fish">Perikanan</option>
+              <a class="logout-link" href="{{ url_for('login') }}">Masuk</a>
             {% endif %}
-          </select>
-        </label>
-      </div>
-      <form id="dataset-record-form" class="dataset-form">
-        <input id="dataset-record-id" type="hidden" />
-        <label for="dataset-table">Dataset
-          <select id="dataset-table" required></select>
-        </label>
-        <label id="dataset-district-field" for="dataset-district">Kecamatan
-          <select id="dataset-district" name="district_name"></select>
-        </label>
-        <label for="dataset-commodity">Komoditas
-          <input id="dataset-commodity" name="commodity" maxlength="100" required />
-        </label>
-        <label for="dataset-year">Tahun
-          <input id="dataset-year" name="year" type="number" min="1900" max="2100" required />
-        </label>
-        <label for="dataset-production">Produksi (ton)
-          <input id="dataset-production" name="production_ton" type="number" min="0" max="1000000" step="0.001" required />
-        </label>
-        <div class="dataset-form-actions">
-          <button class="primary-btn" id="dataset-save-button" type="submit">{% if session['user']['role'] == 'user' %}Ajukan penambahan{% else %}Tambah data{% endif %}</button>
-          <button class="secondary-btn" id="dataset-cancel-edit" type="button" hidden>Batal edit</button>
-        </div>
-      </form>
-      <p id="dataset-form-message" class="form-message" aria-live="polite"></p>
-      <div class="dataset-record-list" id="dataset-record-list" aria-live="polite">Memuat data...</div>
-      <div class="dataset-request-section">
-        <h4>{% if session['user']['role'] == 'user' %}Status permintaan saya{% else %}Permintaan menunggu verifikasi{% endif %}</h4>
-        <div id="dataset-request-list">Memuat permintaan...</div>
-      </div>
-    </section>
-    {% endif %}
+          </div>
+        </header>
 
-    {% if session.get('user') and session['user']['role'] in ['admin_pertanian', 'admin_perikanan'] %}
-    <section class="management-panel admin-panel">
-      <div>
-        <h3>Verifikasi Data Produksi</h3>
-        <p>Admin dapat memverifikasi atau menolak pengajuan pengguna usaha.</p>
+        <div id="layer-dialog" class="map-dialog layer-dialog" hidden>
+          <div class="dialog-header"><h2>Layer Peta</h2><button class="dialog-close" data-close-dialog="layer-dialog" type="button" aria-label="Tutup">×</button></div>
+          <label class="layer-option"><input id="layer-zones" type="checkbox" checked /> Zona kecamatan</label>
+          <label class="layer-option"><input id="layer-markers" type="checkbox" checked /> Titik lokasi produksi</label>
+          <label class="layer-option"><input id="layer-labels" type="checkbox" checked /> Nama lokasi</label>
+          <div class="layer-subtitle">Filter zona kecamatan</div>
+          <label class="layer-option"><input name="zone-filter" type="checkbox" value="fish" {% if not is_admin or role == 'admin_perikanan' %}checked{% endif %} {% if role == 'admin_pertanian' %}disabled{% endif %} /> Zona perikanan</label>
+          <label class="layer-option"><input name="zone-filter" type="checkbox" value="agriculture" {% if not is_admin or role == 'admin_pertanian' %}checked{% endif %} {% if role == 'admin_perikanan' %}disabled{% endif %} /> Zona pertanian</label>
+          <div class="layer-subtitle">Basemap</div>
+          <label class="layer-option"><input name="basemap" type="radio" value="street" checked /> OpenStreetMap</label>
+          <label class="layer-option"><input name="basemap" type="radio" value="satellite" /> Satelit</label>
+        </div>
+
+        <div id="about-dialog" class="map-dialog about-dialog" hidden>
+          <div class="dialog-header"><h2>Tentang Peta</h2><button class="dialog-close" data-close-dialog="about-dialog" type="button" aria-label="Tutup">×</button></div>
+          <p>Peta sebaran hasil perikanan dan pertanian di Kota Ternate.</p>
+          <dl class="about-list">
+            <dt>Zona kecamatan</dt><dd>Warna zona menggambarkan tingkat produksi pada peta.</dd>
+            <dt>Titik lokasi</dt><dd>Marker menampilkan lokasi produksi yang tersimpan di sistem.</dd>
+          </dl>
+        </div>
+
+        <main class="app-content">
+          <section class="app-page-section active" data-page="dashboard">
+            {% if is_admin %}
+              <div class="page-heading admin-page-heading">
+                <div>
+                  <span class="eyebrow">{{ 'PANEL ADMIN PERIKANAN' if role == 'admin_perikanan' else 'PANEL ADMIN PERTANIAN' }}</span>
+                  <h1>Kelola data {{ domain_label }}</h1>
+                  <p>Tambah, verifikasi, ubah, atau hapus data {{ domain_label }} seluruh kecamatan.</p>
+                </div>
+                <label class="admin-dashboard-search" for="admin-dashboard-search">
+                  <span class="sr-only">Cari data {{ domain_label }}</span>
+                  <input id="admin-dashboard-search" type="search" placeholder="Cari lokasi, komoditas, produksi, atau tahun..." autocomplete="off" />
+                </label>
+              </div>
+              <div class="metric-grid admin-metrics">
+                <article class="metric-card"><span>Total data {{ domain_label }}</span><strong id="admin-total-records">—</strong></article>
+                <article class="metric-card"><span>Menunggu verifikasi</span><strong id="admin-pending-count">—</strong></article>
+                <article class="metric-card"><span>Produksi {{ 'ikan' if role == 'admin_perikanan' else 'pertanian' }}</span><strong><span id="admin-production-total">—</span> <small>ton</small></strong></article>
+              </div>
+              <section class="content-card">
+                <div class="card-heading"><h2>Data menunggu verifikasi</h2></div>
+                <div id="verification-list" class="table-scroll">Memuat data pengajuan...</div>
+              </section>
+              <section class="content-card">
+                <div class="card-heading"><h2>Seluruh data {{ domain_label }} terverifikasi</h2><button class="secondary-btn" type="button" data-page-target="add-data">Kelola data</button></div>
+                <div id="admin-verified-list" class="table-scroll">Memuat data terverifikasi...</div>
+              </section>
+            {% else %}
+              <div class="page-heading user-welcome">
+                <span class="eyebrow">SELAMAT DATANG</span>
+                <h1>Halo, {{ user.get('full_name', 'Pengguna') if user else 'Pengguna' }}</h1>
+                <p>Jelajahi sebaran hasil perikanan dan pertanian Kota Ternate.</p>
+              </div>
+              <div class="metric-grid user-metrics">
+                <article class="metric-card"><span>Titik lokasi terdata</span><strong id="user-location-count">—</strong></article>
+                <article class="metric-card"><span>Produksi ikan</span><strong><span id="user-fish-total">—</span> <small>ton</small></strong></article>
+                <article class="metric-card"><span>Produksi pertanian</span><strong><span id="user-agriculture-total">—</span> <small>ton</small></strong></article>
+              </div>
+              <section class="content-card map-callout">
+                <div><h2>Lihat peta sebaran</h2><p>Cari dan lihat detail lokasi perikanan maupun pertanian langsung di peta interaktif.</p></div>
+                <div class="map-callout-actions">{% if user %}<button class="secondary-btn" type="button" data-page-target="add-data">Tambah data</button>{% endif %}<button class="primary-btn" type="button" data-page-target="map">Buka peta</button></div>
+              </section>
+              <section class="content-card">
+                <div class="card-heading"><h2>Ringkasan data terbaru</h2><button class="text-btn" type="button" data-page-target="reports">Lihat laporan</button></div>
+                <div class="table-scroll"><table class="data-table"><thead><tr><th>Lokasi</th><th>Kategori</th><th>Komoditas</th><th>Produksi</th></tr></thead><tbody id="user-latest-records"><tr><td colspan="4">Memuat data...</td></tr></tbody></table></div>
+              </section>
+            {% endif %}
+          </section>
+
+          <section class="app-page-section" data-page="map" hidden>
+            <div class="page-heading compact-heading">
+              <span class="eyebrow">PETA INTERAKTIF</span>
+              <h1>Peta sebaran produksi</h1>
+              <p>{% if is_admin %}Peta menampilkan zona {{ domain_label }} sesuai bidang admin.{% else %}Pilih layer perikanan dan pertanian untuk menjelajahi sebaran produksi.{% endif %}</p>
+            </div>
+            <div class="map-workspace">
+              <aside class="sidebar-panel">
+                <div class="panel-header"><h2>Legenda</h2></div>
+                <div class="legend-block"><p class="block-title">Cluster Produksi</p><div class="legend-item"><span class="swatch green"></span> Produksi rendah</div><div class="legend-item"><span class="swatch yellow"></span> Produksi sedang</div><div class="legend-item"><span class="swatch red"></span> Produksi tinggi</div></div>
+                <div class="legend-block"><p class="block-title">Jenis komoditas</p><div class="legend-item icon-row"><span class="dot-marker fish">🐟</span> Hasil perikanan</div><div class="legend-item icon-row"><span class="dot-marker leaf">🌿</span> Hasil pertanian</div></div>
+                <div class="legend-block"><p class="block-title">Batas administrasi</p><div class="legend-item dashed-row"><span class="dashed-line"></span> Batas kecamatan</div></div>
+              </aside>
+              <section class="map-section">
+                <div id="map"></div>
+                <div class="info-card">
+                  <div class="info-card-header"><h3>Informasi Produksi</h3><button class="close-btn" type="button" aria-label="Sembunyikan informasi">×</button></div>
+                  <div class="info-body">
+                    <div class="info-row"><span>Kecamatan</span><strong id="info-kecamatan">: —</strong></div>
+                    <div class="info-row"><span>Komoditas</span><strong id="info-komoditas">: —</strong></div>
+                    <div class="info-row"><span>Jenis</span><strong id="info-jenis">: —</strong></div>
+                    <div class="info-row"><span>Produksi</span><strong id="info-produksi">: —</strong></div>
+                    <div class="info-row"><span>Cluster</span><strong id="info-cluster">: —</strong></div>
+                  </div>
+                </div>
+              </section>
+            </div>
+            <section class="content-card map-summary-card">
+              <div class="card-heading"><h2 id="summary-title">Ringkasan produksi per kecamatan</h2><button id="summary-reset" class="secondary-btn" type="button" hidden>Ringkasan kecamatan</button></div>
+              <div class="table-scroll"><table class="data-table"><thead id="summary-head"><tr><th>Kecamatan</th><th>Produksi ikan</th><th>Produksi pertanian</th><th>Total produksi</th><th>Cluster</th></tr></thead><tbody id="map-summary-body"></tbody></table></div>
+            </section>
+          </section>
+
+          {% if user %}
+          <section class="app-page-section" data-page="add-data" hidden>
+            <div class="page-heading compact-heading">
+              <span class="eyebrow">{% if is_admin %}KELOLA DATA{% else %}KONTRIBUSI DATA{% endif %}</span>
+              <h1>{% if is_admin %}Tambah data {{ domain_label }}{% else %}Tambah data produksi{% endif %}</h1>
+              <p>{% if is_admin %}Kelola data {{ domain_label }} untuk seluruh kecamatan.{% else %}Kirim data baru untuk ditinjau admin bidang terkait.{% endif %}</p>
+            </div>
+
+            {% if role == 'user' %}
+              <section class="content-card">
+                <div class="card-heading"><div><h2>Ajukan data produksi</h2><p>Pilih titik yang tersedia atau tandai lokasi baru pada peta.</p></div></div>
+                <form id="production-form" class="production-form">
+                  <div class="production-form-section">
+                    <div class="production-grid">
+                      <label class="field"><span>Jenis komoditas</span><input name="commodity" placeholder="Contoh: Ikan Tuna" required /></label>
+                      <label class="field"><span>Produksi</span><div class="inline-field"><input name="production" type="number" step="0.01" min="0" placeholder="0" required /><select name="production_unit" aria-label="Satuan produksi"><option value="ton">Ton</option><option value="kg">Kg</option></select></div></label>
+                    </div>
+                  </div>
+                  <div class="production-form-section">
+                    <div class="section-head"><div class="section-title">Lokasi</div><label class="switch-toggle" for="new-marker-toggle"><input type="checkbox" id="new-marker-toggle" /><span class="switch-track"><span class="switch-thumb"></span></span><span class="switch-text">Tambah titik baru</span></label></div>
+                    <label class="field"><span>Pilih titik yang tersedia</span><select name="marker_id" id="marker-select" required><option value="">Pilih titik lokasi yang tersedia</option></select></label>
+                    <div id="new-marker-fields" class="new-marker-card" hidden>
+                      <div class="new-marker-card-header"><strong>Detail titik baru</strong><small>Klik peta untuk mengisi koordinat dengan cepat.</small></div>
+                      <div class="new-marker-grid">
+                        <label class="field"><span>Nama titik</span><input name="new_marker_name" placeholder="Contoh: Tambak Baru" /></label>
+                        <label class="field"><span>Kecamatan</span><input name="new_district_name" placeholder="Contoh: Ternate Utara" /></label>
+                        <label class="field"><span>Latitude</span><input name="new_latitude" type="number" step="0.000001" min="-90" max="90" placeholder="0.7883" /></label>
+                        <label class="field"><span>Longitude</span><input name="new_longitude" type="number" step="0.000001" min="-180" max="180" placeholder="127.3639" /></label>
+                        <label class="field field-full"><span>Jenis titik</span><select name="new_marker_type"><option value="fish">Perikanan</option><option value="leaf">Pertanian</option></select></label>
+                      </div>
+                    </div>
+                  </div>
+                  <div class="production-form-actions"><button class="primary-btn" type="submit">Kirim data</button></div>
+                </form>
+                <p id="form-message" class="form-message" aria-live="polite"></p>
+              </section>
+            {% endif %}
+
+            {% if user %}
+            <section class="content-card dataset-panel" id="dataset-panel" data-role="{{ role }}">
+              <div class="dataset-panel-heading"><div><h2>{% if role == 'user' %}Ajukan perubahan dataset{% else %}Kelola dataset {{ domain_label }}{% endif %}</h2><p id="dataset-panel-description">Memuat data dataset...</p></div>
+                <label class="dataset-domain-control" for="dataset-domain">Bidang
+                  <select id="dataset-domain" name="domain">
+                    {% if role == 'admin_perikanan' %}<option value="fish">Perikanan</option>{% elif role == 'admin_pertanian' %}<option value="agriculture">Pertanian</option>{% else %}<option value="agriculture">Pertanian</option><option value="fish">Perikanan</option>{% endif %}
+                  </select>
+                </label>
+              </div>
+              <form id="dataset-record-form" class="dataset-form">
+                <input id="dataset-record-id" type="hidden" />
+                <label for="dataset-table">Dataset<select id="dataset-table" required></select></label>
+                <label id="dataset-district-field" for="dataset-district">Kecamatan<select id="dataset-district" name="district_name"></select></label>
+                <label for="dataset-commodity">Komoditas<input id="dataset-commodity" name="commodity" maxlength="100" required /></label>
+                <label for="dataset-year">Tahun<input id="dataset-year" name="year" type="number" min="1900" max="2100" required /></label>
+                <label for="dataset-production">Produksi<input id="dataset-production" name="production_ton" type="number" min="0" max="1000000" step="0.001" required /></label>
+                <label for="dataset-production-unit">Satuan<select id="dataset-production-unit" name="production_unit"><option value="ton">Ton</option><option value="kg">Kg</option></select></label>
+                <div class="dataset-form-actions"><button class="primary-btn" id="dataset-save-button" type="submit">{% if role == 'user' %}Ajukan penambahan{% else %}Tambah data{% endif %}</button><button class="secondary-btn" id="dataset-cancel-edit" type="button" hidden>Batal edit</button></div>
+              </form>
+              <p id="dataset-form-message" class="form-message" aria-live="polite"></p>
+              <div class="dataset-record-list" id="dataset-record-list" aria-live="polite">Memuat data...</div>
+              <div class="dataset-request-section"><h3>{% if role == 'user' %}Status permintaan saya{% else %}Permintaan menunggu verifikasi{% endif %}</h3><div id="dataset-request-list">Memuat permintaan...</div></div>
+            </section>
+            {% endif %}
+          </section>
+          {% endif %}
+
+          <section class="app-page-section" data-page="reports" hidden>
+            <div class="page-heading compact-heading">
+              <span class="eyebrow">LAPORAN PRODUKSI</span>
+              <h1>Laporan tahunan {{ domain_label if is_admin else 'perikanan dan pertanian' }}</h1>
+              <p>Perbandingan jumlah produksi berdasarkan data yang tercatat setiap tahun.</p>
+            </div>
+            <section class="content-card report-card">
+              {% if not is_admin %}
+              <label class="report-filter" for="report-domain">Kategori<select id="report-domain"><option value="all">Semua kategori</option><option value="fish">Perikanan</option><option value="agriculture">Pertanian</option></select></label>
+              {% endif %}
+              <p id="report-message" class="alert-error" role="alert" hidden></p>
+              <div id="report-chart" class="report-chart" aria-label="Grafik produksi tahunan"></div>
+              <div id="report-table" class="table-scroll"><p>Memuat laporan...</p></div>
+            </section>
+          </section>
+        </main>
       </div>
-      <div id="verification-list">Memuat data pengajuan...</div>
-    </section>
-    {% endif %}
+    </div>
 
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
     <script src="{{ url_for('static', filename='script.js') }}"></script>

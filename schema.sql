@@ -375,7 +375,7 @@ INSERT INTO `production_markers` (`id`, `label`, `value`, `type_name`, `emoji`, 
 (11, 'Ternate Tengah Marikurubu', 'Lokasi pertanian', 'leaf', '🌿', 0.789113, 127.370891, 'Ternate Tengah', 'Budiyono Siregar', '0852-7246-5264'),
 (12, 'Tubo 1', 'Lokasi pertanian', 'leaf', '🌿', 0.824038, 127.376984, 'Ternate Utara', 'Shifa Maulana', '0842-1385-3284'),
 (13, 'Bastiong Talangame', 'Lokasi perikanan', 'fish', '🐟', 0.767800, 127.377500, 'Ternate Selatan', 'Bastiong Talangame', '0812-0001-0001'),
-(14, 'Gamalama', 'Lokasi perikanan', 'fish', '🐟', 0.794552, 127.389540, 'Ternate Selatan', 'Gamalama', '0812-0002-0002');
+(14, 'Gamalama', 'Lokasi perikanan', 'fish', '🐟', 0.794552, 127.389540, 'Ternate Tengah', 'Gamalama', '0812-0002-0002');
 
 -- --------------------------------------------------------
 

@@ -2,6 +2,9 @@ const map = L.map('map', {
   zoomControl: true,
   scrollWheelZoom: true,
 }).setView([0.79, 127.38], 11.5);
+const appRole = document.body.dataset.role;
+const adminDomain = appRole === 'admin_perikanan' ? 'fish' : 'agriculture';
+const adminDomainLabel = adminDomain === 'fish' ? 'Perikanan' : 'Pertanian';
 
 let mapResizeTimer;
 const refreshMapSize = () => {
@@ -60,14 +63,6 @@ let commodityDetails = [];
 const summaryTitle = document.getElementById('summary-title');
 const summaryHead = document.getElementById('summary-head');
 const summaryReset = document.getElementById('summary-reset');
-
-const loginToast = document.getElementById('login-toast');
-if (loginToast && loginToast.dataset.message) {
-  loginToast.classList.remove('hidden');
-  setTimeout(() => {
-    loginToast.classList.add('hidden');
-  }, 3200);
-}
 
 function escapeHtmlText(value) {
   return String(value ?? '').replace(/[&<>"']/g, (character) => ({
@@ -214,6 +209,30 @@ function renderDataset(dataset) {
     setTimeout(() => map.invalidateSize(), 80);
   }
   renderSummaryTable(districtData);
+  renderUserDashboard(dataset);
+}
+
+function renderUserDashboard(dataset) {
+  const locationCount = document.getElementById('user-location-count');
+  if (!locationCount) return;
+  const fishTotal = dataset.districts.reduce((sum, district) => sum + Number(district.production.ikan || 0), 0);
+  const agricultureTotal = dataset.districts.reduce((sum, district) => sum + Number(district.production.pertanian || 0), 0);
+  locationCount.textContent = String(dataset.markers.length);
+  document.getElementById('user-fish-total').textContent = fishTotal.toLocaleString('id-ID', { maximumFractionDigits: 3 });
+  document.getElementById('user-agriculture-total').textContent = agricultureTotal.toLocaleString('id-ID', { maximumFractionDigits: 3 });
+
+  const latestRecords = document.getElementById('user-latest-records');
+  const details = (dataset.commodity_details || [])
+    .slice()
+    .sort((left, right) => right.year - left.year)
+    .slice(0, 6);
+  latestRecords.innerHTML = details.length ? details.map((record) => `
+    <tr>
+      <td>${escapeHtmlText(record.district_name || '-')}</td>
+      <td><span class="category-badge ${record.domain === 'fish' ? 'fish' : 'agriculture'}">${record.domain === 'fish' ? 'Perikanan' : 'Pertanian'}</span></td>
+      <td>${escapeHtmlText(record.commodity)}</td>
+      <td>${Number(record.production_ton).toLocaleString('id-ID')} ton</td>
+    </tr>`).join('') : '<tr><td colspan="4">Belum ada data produksi.</td></tr>';
 }
 
 function bindDistrictPopup(district, polygon) {
@@ -231,7 +250,7 @@ function renderCommodityBreakdown(point, domain, marker) {
   summaryReset.hidden = false;
   summaryHead.innerHTML = '<tr><th>Kecamatan</th><th>Komoditas</th><th>Tahun</th><th>Produksi (Ton / Kg)</th></tr>';
 
-  const tableBody = document.querySelector('.summary-table-wrap tbody');
+  const tableBody = document.getElementById('map-summary-body');
   if (!details.length) {
     tableBody.innerHTML = '<tr><td colspan="4">Belum ada rincian komoditas untuk titik ini.</td></tr>';
   } else {
@@ -269,10 +288,15 @@ async function applyCommodityFilter() {
   const response = await fetch(`/api/dataset?commodity=${activeCommodityMetric}`, { cache: 'no-store' });
   const dataset = await response.json();
   if (!response.ok) {
-    console.error(dataset.error || 'Dataset tidak dapat dimuat');
+    const tableBody = document.getElementById('map-summary-body');
+    if (tableBody) tableBody.innerHTML = `<tr><td colspan="5">${escapeHtmlText(dataset.error || 'Dataset tidak dapat dimuat')}</td></tr>`;
     return;
   }
   renderDataset(dataset);
+  markerLayer.clearLayers();
+  markerRecords.forEach(({ marker, type }) => {
+    if (selectedZoneTypes.has(getCommodityType(type))) markerLayer.addLayer(marker);
+  });
   if (!zonesVisible) map.removeLayer(districtLayer);
 }
 
@@ -287,7 +311,7 @@ function renderSummaryTable(districts) {
       <th>Total Produksi (Ton / Kg)</th>
       <th>Cluster</th>
     </tr>`;
-  const tableBody = document.querySelector('.summary-table-wrap tbody');
+  const tableBody = document.getElementById('map-summary-body');
   const rows = districts.map((district) => {
     const fishValue = district.production.ikan;
     const agricultureValue = district.production.pertanian;
@@ -370,45 +394,187 @@ legend.addTo(map);
 
 const productionForm = document.getElementById('production-form');
 if (productionForm) {
+  const newMarkerToggle = document.getElementById('new-marker-toggle');
+  const newMarkerFields = document.getElementById('new-marker-fields');
+  const markerSelect = document.getElementById('marker-select');
+
+  const syncMarkerSelectionMode = () => {
+    const useNewMarker = Boolean(newMarkerToggle && newMarkerToggle.checked);
+    if (newMarkerFields) newMarkerFields.hidden = !useNewMarker;
+    if (markerSelect) {
+      markerSelect.disabled = useNewMarker;
+      markerSelect.required = !useNewMarker;
+      if (useNewMarker) {
+        markerSelect.value = '';
+      }
+    }
+  };
+
+  newMarkerToggle?.addEventListener('change', syncMarkerSelectionMode);
+  syncMarkerSelectionMode();
+
+  map.on('click', (event) => {
+    if (!newMarkerToggle || !newMarkerToggle.checked) return;
+    const latitudeInput = productionForm.querySelector('input[name="new_latitude"]');
+    const longitudeInput = productionForm.querySelector('input[name="new_longitude"]');
+    if (latitudeInput) latitudeInput.value = Number(event.latlng.lat).toFixed(6);
+    if (longitudeInput) longitudeInput.value = Number(event.latlng.lng).toFixed(6);
+  });
+
   productionForm.addEventListener('submit', async (event) => {
     event.preventDefault();
     const message = document.getElementById('form-message');
-    const response = await fetch('/api/production', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(Object.fromEntries(new FormData(productionForm))),
-    });
-    const result = await response.json();
-    message.textContent = result.message || result.error;
-    message.style.color = response.ok ? '#3d8a59' : '#b34235';
-    if (response.ok) productionForm.reset();
+    const formData = Object.fromEntries(new FormData(productionForm));
+    if (newMarkerToggle && newMarkerToggle.checked) {
+      formData.marker_id = '';
+    }
+    try {
+      const response = await fetch('/api/production', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(formData),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || 'Data produksi tidak berhasil dikirim');
+      message.textContent = result.message;
+      message.style.color = '#3d8a59';
+      productionForm.reset();
+      syncMarkerSelectionMode();
+    } catch (error) {
+      message.textContent = error.message;
+      message.style.color = '#b34235';
+    }
   });
 }
 
 const verificationList = document.getElementById('verification-list');
+const verifiedList = document.getElementById('admin-verified-list');
+const adminDashboardSearch = document.getElementById('admin-dashboard-search');
+let adminPendingRecords = [];
+let adminVerifiedRows = [];
+let adminSearchQuery = '';
+let adminDashboardError = '';
+
+function matchesAdminSearch(record) {
+  const production = Number(record.production || 0);
+  const searchText = [
+    record.location,
+    record.commodity,
+    record.year,
+    production,
+    production.toLocaleString('id-ID'),
+  ]
+    .join(' ')
+    .toLowerCase();
+  return searchText.includes(adminSearchQuery);
+}
+
+function renderAdminDashboardLists() {
+  if (adminDashboardError) {
+    verificationList.textContent = adminDashboardError;
+    if (verifiedList) verifiedList.textContent = adminDashboardError;
+    return;
+  }
+
+  const filteredPending = adminPendingRecords.filter(matchesAdminSearch);
+  verificationList.innerHTML = filteredPending.length ? `
+    <table class="data-table"><thead><tr><th>Lokasi</th><th>Jenis ${adminDomainLabel.toLowerCase()}</th><th>Produksi</th><th>Dikirim oleh</th><th>Aksi</th></tr></thead>
+    <tbody>${filteredPending.map((record) => `
+      <tr>
+        <td>${escapeHtmlText(record.location || '-')}</td>
+        <td>${escapeHtmlText(record.commodity)}</td>
+        <td>${Number(record.production).toLocaleString('id-ID')} ton</td>
+        <td>${escapeHtmlText(record.creator_name || '-')}</td>
+        <td class="table-actions"><button class="verify-btn" data-id="${record.id}" data-status="verified">Verifikasi</button><button class="reject-btn" data-id="${record.id}" data-status="rejected">Tolak</button></td>
+      </tr>`).join('')}</tbody></table>` : adminPendingRecords.length
+      ? '<p class="empty-state">Tidak ada data pengajuan yang cocok dengan pencarian.</p>'
+      : '<p class="empty-state">Tidak ada data yang menunggu verifikasi.</p>';
+
+  if (verifiedList) {
+    const filteredVerified = adminVerifiedRows.filter(matchesAdminSearch);
+    verifiedList.innerHTML = filteredVerified.length ? `
+      <table class="data-table"><thead><tr><th>Lokasi</th><th>Jenis ${adminDomainLabel.toLowerCase()}</th><th>Produksi</th><th>Tahun</th><th>Status</th></tr></thead>
+      <tbody>${filteredVerified.map((record) => `
+        <tr><td>${escapeHtmlText(record.location || '-')}</td><td>${escapeHtmlText(record.commodity)}</td><td>${Number(record.production).toLocaleString('id-ID')} ton</td><td>${record.year}</td><td><span class="status-badge">Terverifikasi</span></td></tr>`).join('')}</tbody></table>` : adminVerifiedRows.length
+        ? '<p class="empty-state">Tidak ada data terverifikasi yang cocok dengan pencarian.</p>'
+        : '<p class="empty-state">Belum ada data terverifikasi.</p>';
+  }
+}
+
+if (adminDashboardSearch) {
+  adminDashboardSearch.addEventListener('input', () => {
+    adminSearchQuery = adminDashboardSearch.value.trim().toLowerCase();
+    renderAdminDashboardLists();
+  });
+}
+
 async function loadVerificationList() {
   if (!verificationList) return;
-  const response = await fetch('/api/production');
-  const records = await response.json();
-  const pending = records.filter((record) => record.status === 'pending');
-  verificationList.innerHTML = pending.length ? pending.map((record) => `
-    <div class="verification-item">
-      <span><strong>${record.commodity}</strong> · ${record.production} ton · ${record.location}<br>
-      <small>${record.creator_name} · ${record.type_name}</small></span>
-      <span class="verification-actions">
-        <button class="verify-btn" data-id="${record.id}" data-status="verified">Verifikasi</button>
-        <button class="reject-btn" data-id="${record.id}" data-status="rejected">Tolak</button>
-      </span>
-    </div>
-  `).join('') : '<p>Tidak ada data yang menunggu verifikasi.</p>';
+  try {
+    const [pendingResponse, verifiedResponse, datasetResponse] = await Promise.all([
+      fetch('/api/production'),
+      fetch('/api/production?status=verified'),
+      fetch(`/api/commodity-data?domain=${adminDomain}`),
+    ]);
+    const [pendingRecords, verifiedRecords, dataset] = await Promise.all([
+      pendingResponse.json(),
+      verifiedResponse.json(),
+      datasetResponse.json(),
+    ]);
+    if (!pendingResponse.ok || !verifiedResponse.ok || !datasetResponse.ok) {
+      throw new Error(pendingRecords.error || verifiedRecords.error || dataset.error || 'Data admin tidak dapat dimuat');
+    }
+    adminDashboardError = '';
+    adminPendingRecords = pendingRecords.filter((record) => record.status === 'pending');
+    if (verifiedList) {
+      const importedRows = dataset.records.map((record) => ({
+        location: record.district_name,
+        commodity: record.commodity,
+        production: record.production_ton,
+        year: record.year,
+        creator: 'Dataset',
+      }));
+      const submittedRows = verifiedRecords.map((record) => ({
+        location: record.location,
+        commodity: record.commodity,
+        production: record.production,
+        year: record.created_at ? new Date(record.created_at).getFullYear() : '—',
+        creator: record.creator_name || 'Pengguna',
+      }));
+      adminVerifiedRows = [...importedRows, ...submittedRows];
+      renderAdminDashboardLists();
+      document.getElementById('admin-total-records').textContent = adminVerifiedRows.length.toLocaleString('id-ID');
+      document.getElementById('admin-pending-count').textContent = adminPendingRecords.length.toLocaleString('id-ID');
+      const latestYear = Math.max(...dataset.records.map((record) => Number(record.year)), 0);
+      const importedProduction = dataset.records
+        .filter((record) => Number(record.year) === latestYear)
+        .reduce((sum, record) => sum + Number(record.production_ton || 0), 0);
+      const submittedProduction = verifiedRecords.reduce((sum, record) => sum + Number(record.production || 0), 0);
+      document.getElementById('admin-production-total').textContent =
+        (importedProduction + submittedProduction).toLocaleString('id-ID', { maximumFractionDigits: 3 });
+    }
+  } catch (error) {
+    adminDashboardError = error.message;
+    verificationList.textContent = error.message;
+    const verifiedList = document.getElementById('admin-verified-list');
+    if (verifiedList) verifiedList.textContent = error.message;
+  }
   verificationList.querySelectorAll('button').forEach((button) => {
     button.addEventListener('click', async () => {
-      await fetch(`/api/production/${button.dataset.id}/verify`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ status: button.dataset.status }),
-      });
-      loadVerificationList();
+      button.disabled = true;
+      try {
+        const response = await fetch(`/api/production/${button.dataset.id}/verify`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ status: button.dataset.status }),
+        });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error || 'Verifikasi tidak berhasil');
+        await loadVerificationList();
+      } catch (error) {
+        button.disabled = false;
+        window.alert(error.message);
+      }
     });
   });
 }
@@ -496,7 +662,8 @@ if (datasetPanel) {
       ? requestRecord.original_data
       : requestRecord.payload;
     if (!values) return '';
-    const parts = [values.commodity, values.district_name, values.year, values.production_ton]
+    const unitText = values.production_unit === 'kg' ? 'kg' : 'ton';
+    const parts = [values.commodity, values.district_name, values.year, `${values.production_ton} ${unitText}`]
       .filter((value) => value !== undefined && value !== null && value !== '');
     return parts.map(escapeHtml).join(' · ');
   }
@@ -553,7 +720,7 @@ if (datasetPanel) {
         <td>${escapeHtml(record.district_name || '-')}</td>
         <td>${escapeHtml(record.commodity)}</td>
         <td>${record.year}</td>
-        <td>${Number(record.production_ton).toLocaleString('id-ID')}</td>
+        <td>${Number(record.production_ton).toLocaleString('id-ID')} ton</td>
         <td class="dataset-row-actions">
           <button class="edit-dataset-btn" type="button" data-table="${record.table_name}" data-record-id="${record.id}">${isDatasetUser ? 'Ajukan edit' : 'Edit'}</button>
           <button class="delete-dataset-btn" type="button" data-table="${record.table_name}" data-record-id="${record.id}">${isDatasetUser ? 'Ajukan hapus' : 'Hapus'}</button>
@@ -605,6 +772,7 @@ if (datasetPanel) {
     const entry = Object.fromEntries(new FormData(datasetForm));
     const tableName = datasetTable.value;
     const recordId = datasetRecordId.value;
+    if (!entry.production_unit) entry.production_unit = 'ton';
     const operation = recordId ? 'update' : 'create';
     let result;
     try {
@@ -763,3 +931,162 @@ document.querySelectorAll('input[name="basemap"]').forEach((input) => {
     }
   });
 });
+
+const pageSections = [...document.querySelectorAll('.app-page-section')];
+const navigationButtons = [...document.querySelectorAll('[data-page-target]')];
+const layerToggle = document.getElementById('layer-toggle');
+const aboutToggle = document.getElementById('about-toggle');
+
+function showPage(pageName) {
+  pageSections.forEach((section) => {
+    const active = section.dataset.page === pageName;
+    section.hidden = !active;
+    section.classList.toggle('active', active);
+  });
+  navigationButtons.forEach((button) => {
+    if (button.classList.contains('side-nav-link')) {
+      button.classList.toggle('active', button.dataset.pageTarget === pageName);
+    }
+  });
+  const isMapPage = pageName === 'map';
+  layerToggle.hidden = !isMapPage;
+  aboutToggle.hidden = !isMapPage;
+  if (isMapPage) {
+    refreshMapSize();
+    setTimeout(() => {
+      map.invalidateSize();
+      const bounds = L.featureGroup(districtLayer.getLayers()).getBounds();
+      if (bounds.isValid()) map.fitBounds(bounds.pad(0.08));
+    }, 170);
+  }
+}
+
+navigationButtons.forEach((button) => {
+  button.addEventListener('click', () => showPage(button.dataset.pageTarget));
+});
+
+const reportChart = document.getElementById('report-chart');
+const reportTable = document.getElementById('report-table');
+const reportMessage = document.getElementById('report-message');
+const reportDomainSelect = document.getElementById('report-domain');
+let annualReport = [];
+
+function renderAnnualReport() {
+  if (!reportChart || !reportTable) return;
+  const selectedDomain = reportDomainSelect ? reportDomainSelect.value : adminDomain;
+  const rows = annualReport.filter((row) => selectedDomain === 'all' || row.domain === selectedDomain);
+  if (!rows.length) {
+    reportChart.innerHTML = '<p class="empty-state">Belum ada data produksi tahunan.</p>';
+    reportTable.innerHTML = '<p class="empty-state">Belum ada data produksi tahunan.</p>';
+    return;
+  }
+
+  const years = [...new Set(rows.map((row) => row.year))].sort((left, right) => left - right);
+  const totalsByYear = years.map((year) => {
+    const yearRows = rows.filter((row) => row.year === year);
+    return {
+      year,
+      fish: yearRows.filter((row) => row.domain === 'fish').reduce((sum, row) => sum + row.production, 0),
+      agriculture: yearRows.filter((row) => row.domain === 'agriculture').reduce((sum, row) => sum + row.production, 0),
+    };
+  });
+  const chartWidth = 760;
+  const chartHeight = 312;
+  const chartLeft = 88;
+  const chartRight = 744;
+  const chartTop = 28;
+  const chartBottom = 232;
+  const dataMaximum = Math.max(...totalsByYear.flatMap((row) => [row.fish, row.agriculture]), 0);
+  const roughStep = dataMaximum > 0 ? dataMaximum / 5 : 1;
+  const stepMagnitude = 10 ** Math.floor(Math.log10(roughStep));
+  const normalizedStep = roughStep / stepMagnitude;
+  const tickStep = (normalizedStep <= 1 ? 1 : normalizedStep <= 2 ? 2 : normalizedStep <= 5 ? 5 : 10) * stepMagnitude;
+  const tickCount = dataMaximum > 0 ? Math.ceil(dataMaximum / tickStep) : 1;
+  const maxProduction = tickCount * tickStep;
+  const yearPosition = (index) => totalsByYear.length === 1
+    ? (chartLeft + chartRight) / 2
+    : chartLeft + index * (chartRight - chartLeft) / (totalsByYear.length - 1);
+  const yPosition = (value) => chartBottom - value / maxProduction * (chartBottom - chartTop);
+  const domains = selectedDomain === 'all' ? ['fish', 'agriculture'] : [selectedDomain];
+  const domainLabels = { fish: 'Perikanan', agriculture: 'Pertanian' };
+  const series = domains.map((domain) => {
+    const values = totalsByYear.map((row) => domain === 'fish' ? row.fish : row.agriculture);
+    const points = values.map((value, index) => `${yearPosition(index)},${yPosition(value)}`).join(' ');
+    const markers = values.map((value, index) =>
+      `<circle class="report-point ${domain}-point" cx="${yearPosition(index)}" cy="${yPosition(value)}" r="4"><title>${domainLabels[domain]} ${totalsByYear[index].year}: ${value.toLocaleString('id-ID', { maximumFractionDigits: 3 })} ton</title></circle>`,
+    ).join('');
+    return `<polyline class="report-line ${domain}-line" points="${points}" />${markers}`;
+  }).join('');
+  const gridLines = Array.from({ length: tickCount + 1 }, (_, index) => {
+    const value = tickStep * index;
+    const y = yPosition(value);
+    return `<g class="report-grid"><line x1="${chartLeft}" y1="${y}" x2="${chartRight}" y2="${y}" /><text x="${chartLeft - 10}" y="${y + 4}" text-anchor="end">${value.toLocaleString('id-ID', { maximumFractionDigits: 6 })}</text></g>`;
+  }).join('');
+  const yearLabels = totalsByYear.map((row, index) =>
+    `<text class="report-year" x="${yearPosition(index)}" y="${chartBottom + 24}" text-anchor="middle">${row.year}</text>`,
+  ).join('');
+  const legend = domains.map((domain) =>
+    `<span><i class="${domain}-key"></i>${domainLabels[domain]}</span>`,
+  ).join('');
+  reportChart.innerHTML = `<div class="report-chart-heading"><div><h2>Produksi tahunan</h2><p>Perbandingan hasil produksi setiap tahun</p></div><span class="report-chart-unit">SATUAN: TON</span></div><div class="report-chart-plot"><svg class="annual-line-chart" viewBox="0 0 ${chartWidth} ${chartHeight}" role="img" aria-label="Grafik garis produksi tahunan dalam ton">${gridLines}<line class="report-axis" x1="${chartLeft}" y1="${chartTop}" x2="${chartLeft}" y2="${chartBottom}" /><line class="report-axis" x1="${chartLeft}" y1="${chartBottom}" x2="${chartRight}" y2="${chartBottom}" />${series}${yearLabels}<text class="report-axis-label report-y-label" x="20" y="${(chartTop + chartBottom) / 2}" text-anchor="middle" transform="rotate(-90 20 ${(chartTop + chartBottom) / 2})">Jumlah Produksi (ton)</text><text class="report-axis-label" x="${(chartLeft + chartRight) / 2}" y="${chartHeight - 8}" text-anchor="middle">Tahun</text></svg></div><div class="chart-legend">${legend}</div>`;
+
+  const previous = new Map();
+  reportTable.innerHTML = `<table class="data-table"><thead><tr><th>Tahun</th>${selectedDomain === 'all' ? '<th>Perikanan (ton)</th><th>Pertanian (ton)</th>' : `<th>Produksi ${selectedDomain === 'fish' ? 'perikanan' : 'pertanian'} (ton)</th>`}<th>Total (ton)</th><th>Perubahan</th></tr></thead><tbody>${totalsByYear.map((row) => {
+    const total = selectedDomain === 'fish' ? row.fish : selectedDomain === 'agriculture' ? row.agriculture : row.fish + row.agriculture;
+    const previousTotal = previous.get(selectedDomain) || null;
+    const change = previousTotal === null || previousTotal === 0
+      ? '—'
+      : `${total >= previousTotal ? 'Naik' : 'Turun'} ${Math.abs((total - previousTotal) / previousTotal * 100).toLocaleString('id-ID', { maximumFractionDigits: 1 })}%`;
+    previous.set(selectedDomain, total);
+    return `<tr><td>${row.year}</td>${selectedDomain === 'all' ? `<td>${row.fish.toLocaleString('id-ID', { maximumFractionDigits: 3 })}</td><td>${row.agriculture.toLocaleString('id-ID', { maximumFractionDigits: 3 })}</td>` : ''}<td>${total.toLocaleString('id-ID', { maximumFractionDigits: 3 })}</td><td>${change}</td></tr>`;
+  }).join('')}</tbody></table>`;
+}
+
+async function loadAnnualReport() {
+  if (!reportChart || !reportTable) return;
+  reportTable.textContent = 'Memuat laporan...';
+  try {
+    const domains = appRole === 'admin_perikanan' ? ['fish']
+      : appRole === 'admin_pertanian' ? ['agriculture']
+        : ['fish', 'agriculture'];
+    const responses = await Promise.all(domains.map((domain) =>
+      fetch(`/api/commodity-data?domain=${domain}`)));
+    const datasets = await Promise.all(responses.map((response) => response.json()));
+    const failed = responses.findIndex((response) => !response.ok);
+    if (failed >= 0) throw new Error(datasets[failed].error || 'Laporan tidak dapat dimuat');
+
+    const productionResponse = await fetch('/api/production?status=verified');
+    const productionRecords = await productionResponse.json();
+    if (!productionResponse.ok) throw new Error(productionRecords.error || 'Data produksi terverifikasi tidak dapat dimuat');
+
+    annualReport = [];
+    datasets.forEach((dataset, index) => {
+      dataset.records.forEach((record) => annualReport.push({
+        domain: domains[index],
+        year: Number(record.year),
+        production: Number(record.production_ton || 0),
+      }));
+    });
+    productionRecords.filter((record) => record.status === 'verified').forEach((record) => {
+      const domain = getCommodityType(record.type_name);
+      if (!domain || !domains.includes(domain)) return;
+      const year = new Date(record.created_at).getFullYear();
+      if (Number.isFinite(year)) annualReport.push({ domain, year, production: Number(record.production || 0) });
+    });
+    reportMessage.hidden = true;
+    reportMessage.textContent = '';
+    reportChart.hidden = false;
+    reportTable.hidden = false;
+    renderAnnualReport();
+  } catch (error) {
+    reportChart.textContent = '';
+    reportChart.hidden = true;
+    reportTable.textContent = '';
+    reportTable.hidden = true;
+    reportMessage.textContent = error.message;
+    reportMessage.hidden = false;
+  }
+}
+
+reportDomainSelect?.addEventListener('change', renderAnnualReport);
+loadAnnualReport();
